@@ -1,0 +1,198 @@
+package delivery
+
+import (
+	"fmt"
+	"testing"
+
+	"github.com/ran-su/cronplus/internal/models"
+)
+
+// mockDriver is a test double for delivery.Driver.
+type mockDriver struct {
+	sentMessages []string
+	failOnSend   bool
+}
+
+func (m *mockDriver) Type() string { return "mock" }
+func (m *mockDriver) Send(profile models.DeliveryProfile, message string) error {
+	if m.failOnSend {
+		return fmt.Errorf("mock send failure")
+	}
+	m.sentMessages = append(m.sentMessages, message)
+	return nil
+}
+
+func makeTask(profileIDs []string, sendOn []string) *models.Task {
+	return &models.Task{
+		ID:          "task1",
+		DisplayName: "Test Task",
+		Manifest: &models.ScriptManifest{
+			Delivery: models.DeliverySection{
+				Profiles: profileIDs,
+				SendOn:   sendOn,
+			},
+		},
+	}
+}
+
+func makeRun(exitCode int, status, summary string) *models.RunRecord {
+	record := &models.RunRecord{
+		ID:     "run1",
+		TaskID: "task1",
+		Outcome: models.RunOutcome{
+			ExitCode:   exitCode,
+			DurationMs: 1500,
+		},
+	}
+	if status != "" {
+		record.Outcome.ParsedResult = &models.ParsedResult{
+			Status:  status,
+			Summary: summary,
+		}
+	}
+	return record
+}
+
+func TestDeliver_MatchesSendOn(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Mock", DriverType: "mock", Enabled: true},
+	}
+
+	// Task sends on "success" only
+	task := makeTask([]string{"p1"}, []string{"success"})
+
+	// Success run — should send
+	run := makeRun(0, "success", "done")
+	results := svc.Deliver(task, run, profiles)
+	if len(results) != 1 || results[0].Status != "success" {
+		t.Errorf("expected delivery success, got %+v", results)
+	}
+
+	// Failure run — should NOT send (not in send_on)
+	mock.sentMessages = nil
+	run2 := makeRun(1, "failed", "error")
+	results2 := svc.Deliver(task, run2, profiles)
+	if len(results2) != 0 {
+		t.Errorf("expected no delivery for failed status, got %+v", results2)
+	}
+}
+
+func TestDeliver_SkipsDisabledProfile(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Disabled", DriverType: "mock", Enabled: false},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	run := makeRun(0, "success", "done")
+	results := svc.Deliver(task, run, profiles)
+	if len(results) != 1 || results[0].Status != "skipped" {
+		t.Errorf("expected skipped for disabled profile, got %+v", results)
+	}
+}
+
+func TestDeliver_TreatsFailedAsFailureAlias(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Mock", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"failure"})
+	run := makeRun(1, "failed", "error")
+	results := svc.Deliver(task, run, profiles)
+	if len(results) != 1 || results[0].Status != "success" {
+		t.Errorf("expected failed alias to match failure send_on, got %+v", results)
+	}
+}
+
+func TestDeliver_UnknownDriver(t *testing.T) {
+	svc := NewService() // no drivers registered
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Unknown", DriverType: "webhook", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	run := makeRun(0, "success", "done")
+	results := svc.Deliver(task, run, profiles)
+	if len(results) != 1 || results[0].Status != "failed" {
+		t.Errorf("expected failed for unknown driver, got %+v", results)
+	}
+}
+
+func TestBuildMessage_DocumentedTemplateKeys(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	task.Manifest.Delivery.MessageTemplate = "[{{.TaskName}}] {{.Status}} {{.Summary}}"
+	run := makeRun(0, "success", "All good")
+	svc.Deliver(task, run, profiles)
+
+	if len(mock.sentMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.sentMessages))
+	}
+	if got, want := mock.sentMessages[0], "[Test Task] success All good"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestDeliver_ProfileNotFound(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	task := makeTask([]string{"nonexistent"}, []string{"success"})
+	run := makeRun(0, "success", "done")
+	results := svc.Deliver(task, run, []models.DeliveryProfile{})
+	if len(results) != 1 || results[0].Status != "failed" {
+		t.Errorf("expected failed for missing profile, got %+v", results)
+	}
+}
+
+func TestDeliver_DriverFailure(t *testing.T) {
+	mock := &mockDriver{failOnSend: true}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Failing", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	run := makeRun(0, "success", "done")
+	results := svc.Deliver(task, run, profiles)
+	if len(results) != 1 || results[0].Status != "failed" {
+		t.Errorf("expected failed for driver error, got %+v", results)
+	}
+}
+
+func TestBuildMessage_DefaultTemplate(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	run := makeRun(0, "success", "All good")
+	svc.Deliver(task, run, profiles)
+
+	if len(mock.sentMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.sentMessages))
+	}
+	msg := mock.sentMessages[0]
+	if len(msg) == 0 {
+		t.Error("message should not be empty")
+	}
+}

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="CronPlus — Local automation runner for Python task scripts">
+    <meta name="theme-color" content="#050507">
+    <title>CronPlus</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div id="app">
+        <!-- Login screen -->
+        <div id="login-screen" class="screen" style="display:none">
+            <div class="login-card">
+                <div class="login-logo">⚡</div>
+                <h1>CronPlus</h1>
+                <p class="login-subtitle">Enter your auth token to continue</p>
+                <input type="password" id="token-input" placeholder="Paste auth token..." autocomplete="off">
+                <button id="login-btn" onclick="attemptLogin()">Sign In</button>
+                <p class="login-hint">Find your token at <code>~/.config/cronplus/auth-token</code></p>
+            </div>
+        </div>
+
+        <!-- Main app -->
+        <div id="main-app" class="screen" style="display:none">
+            <nav id="sidebar">
+                <div class="sidebar-header">
+                    <span class="logo">⚡</span>
+                    <span class="logo-text">CronPlus</span>
+                </div>
+                <ul class="nav-links">
+                    <li><a href="#/" class="nav-link active" data-page="dashboard">
+                        <span class="nav-icon">📊</span> <span class="nav-label">Dashboard</span>
+                    </a></li>
+                    <li><a href="#/tasks" class="nav-link" data-page="tasks">
+                        <span class="nav-icon">📋</span> <span class="nav-label">Tasks</span>
+                    </a></li>
+                    <li><a href="#/delivery" class="nav-link" data-page="delivery">
+                        <span class="nav-icon">📬</span> <span class="nav-label">Delivery</span>
+                    </a></li>
+                    <li><a href="#/commands" class="nav-link" data-page="commands">
+                        <span class="nav-icon">💬</span> <span class="nav-label">Commands</span>
+                    </a></li>
+                    <li><a href="#/settings" class="nav-link" data-page="settings">
+                        <span class="nav-icon">⚙️</span> <span class="nav-label">Settings</span>
+                    </a></li>
+                </ul>
+                <div class="sidebar-footer">
+                    <div class="connection-status" id="connection-status">
+                        <span class="status-dot"></span>
+                        <span class="status-text">Connected</span>
+                    </div>
+                </div>
+            </nav>
+
+            <main id="content">
+                <!-- Pages rendered here by JS -->
+            </main>
+        </div>
+    </div>
+
+    <!-- Toast container -->
+    <div id="toasts"></div>
+
+    <script src="/app.js"></script>
+</body>
+</html>

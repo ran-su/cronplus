@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Validate schema JSON
+        run: python3 -m json.tool schemas/manifest.schema.json >/tmp/manifest.schema.json
+
+      - name: Check web JavaScript syntax
+        run: node --check web/app.js
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race tests
+        run: go test -race ./internal/core ./internal/api ./internal/inbound ./internal/delivery ./internal/manifest
+

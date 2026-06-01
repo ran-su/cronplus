@@ -54,6 +54,26 @@ func (l *daemonLock) Release() {
 	l.file = nil
 }
 
+func daemonLockHeld(path string) (bool, error) {
+	file, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	defer file.Close()
+
+	if err := syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		if isLockBusy(err) {
+			return true, nil
+		}
+		return false, err
+	}
+	_ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN)
+	return false, nil
+}
+
 func isLockBusy(err error) bool {
 	return errors.Is(err, syscall.EWOULDBLOCK) || errors.Is(err, syscall.EAGAIN)
 }

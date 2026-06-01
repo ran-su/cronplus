@@ -169,6 +169,25 @@ func cliAutostartInstall(args []string) int {
 		return 0
 	}
 
+	configDir, err := defaultConfigDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 1
+	}
+	daemonRunning, err := daemonLockHeld(filepath.Join(configDir, "daemon.lock"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "daemon lock: %v\n", err)
+		return 1
+	}
+	if daemonRunning {
+		fmt.Printf("Autostart installed for the next login.\nCronPlus is already running, so it was not started again.\nLaunchAgent: %s\nBinary: %s\n", plistPath, resolvedBinaryPath)
+		if selectedPort > 0 {
+			fmt.Printf("Port: %d\n", selectedPort)
+		}
+		fmt.Printf("Log: %s\n", logPath)
+		return 0
+	}
+
 	if output, err := reloadLaunchAgent(plistPath); err != nil {
 		fmt.Fprintf(os.Stderr, "load autostart: %v\n", err)
 		if output != "" {

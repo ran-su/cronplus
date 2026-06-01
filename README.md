@@ -276,7 +276,7 @@ cronplus autostart status
 cronplus autostart uninstall
 ```
 
-The service keeps CronPlus running in the background, starts it at login, and restarts it automatically. The command writes `~/Library/LaunchAgents/com.cronplus.daemon.plist` and logs to `~/Library/Logs/cronplus.log`.
+The service keeps CronPlus running in the background, starts it at login, and restarts it automatically. The command writes `~/Library/LaunchAgents/com.cronplus.daemon.plist` and logs to `~/Library/Logs/cronplus.log`. If CronPlus is already running when you install autostart, the command installs the LaunchAgent without starting a second daemon.
 
 ## Configuration
 

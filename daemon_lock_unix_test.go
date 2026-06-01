@@ -55,3 +55,36 @@ func TestAcquireDaemonLockCanBeReacquiredAfterRelease(t *testing.T) {
 	}
 	second.Release()
 }
+
+func TestDaemonLockHeld(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "daemon.lock")
+
+	held, err := daemonLockHeld(lockPath)
+	if err != nil {
+		t.Fatalf("daemonLockHeld() error = %v", err)
+	}
+	if held {
+		t.Fatal("daemonLockHeld() = true before lock exists")
+	}
+
+	lock, err := acquireDaemonLock(lockPath, 9876)
+	if err != nil {
+		t.Fatalf("acquireDaemonLock() error = %v", err)
+	}
+	held, err = daemonLockHeld(lockPath)
+	if err != nil {
+		t.Fatalf("daemonLockHeld() while locked error = %v", err)
+	}
+	if !held {
+		t.Fatal("daemonLockHeld() = false while lock is held")
+	}
+
+	lock.Release()
+	held, err = daemonLockHeld(lockPath)
+	if err != nil {
+		t.Fatalf("daemonLockHeld() after release error = %v", err)
+	}
+	if held {
+		t.Fatal("daemonLockHeld() = true after release")
+	}
+}

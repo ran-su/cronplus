@@ -591,19 +591,26 @@ async function loadRunHistory(taskID) {
         return;
     }
 
-    el.innerHTML = `<div class="table-wrapper"><table>
-        <thead><tr><th>Status</th><th>Trigger</th><th>Started</th><th>Duration</th><th></th></tr></thead>
-        <tbody>${runs.map(r => {
+    el.innerHTML = `<div class="run-history-list">
+        ${runs.map(r => {
             const status = normalizeRunStatus(r.outcome?.parsedResult?.status || (r.outcome?.exitCode === 0 ? 'success' : 'failure'));
-            return `<tr>
-                <td><span class="badge badge-${runStatusBadge(status)}">${esc(status)}</span></td>
-                <td>${esc(r.trigger)}</td>
-                <td>${formatTime(r.startedAt)}</td>
-                <td>${r.outcome?.durationMs ? (r.outcome.durationMs / 1000).toFixed(1) + 's' : '—'}</td>
-                <td><a href="#/tasks/${r.taskID}/runs/${r.id}" class="btn btn-sm">View</a></td>
-            </tr>`;
-        }).join('')}</tbody>
-    </table></div>`;
+            const delivery = deliveryHistorySummary(r.deliveryResults || []);
+            return `<a class="run-history-row" href="#/tasks/${r.taskID}/runs/${r.id}">
+                <div class="run-history-primary">
+                    <span class="run-history-status-group">
+                        <span class="badge badge-${runStatusBadge(status)}">${esc(runHistoryStatusLabel(status))}</span>
+                    </span>
+                    ${renderDeliveryHistorySummary(delivery)}
+                </div>
+                <div class="run-history-meta">
+                    <span><span class="run-history-label">Trigger</span>${esc(r.trigger)}</span>
+                    <span><span class="run-history-label">Started</span>${formatTime(r.startedAt)}</span>
+                    <span><span class="run-history-label">Duration</span>${r.outcome?.durationMs ? (r.outcome.durationMs / 1000).toFixed(1) + 's' : '—'}</span>
+                </div>
+                <span class="run-history-view">View</span>
+            </a>`;
+        }).join('')}
+    </div>`;
 }
 
 // ===== Run Detail =====
@@ -1101,10 +1108,48 @@ function runStatusBadge(status) {
     return 'danger';
 }
 
+function runHistoryStatusLabel(status) {
+    const normalized = normalizeRunStatus(status);
+    if (normalized === 'success') return 'run succeeded';
+    if (normalized === 'warning') return 'run warned';
+    if (normalized === 'skipped') return 'run skipped';
+    return 'run failed';
+}
+
 function deliveryStatusBadge(status) {
     if (status === 'success') return 'success';
     if (status === 'skipped') return 'muted';
     return 'danger';
+}
+
+function deliveryHistorySummary(results) {
+    if (!Array.isArray(results) || results.length === 0) {
+        return { status: 'none', label: 'delivery not sent' };
+    }
+    const counts = results.reduce((acc, result) => {
+        const status = String(result.status || '').toLowerCase();
+        if (status === 'success') acc.sent += 1;
+        else if (status === 'skipped') acc.skipped += 1;
+        else if (status === 'failed' || status === 'failure') acc.failed += 1;
+        else acc.unknown += 1;
+        return acc;
+    }, { sent: 0, failed: 0, skipped: 0, unknown: 0 });
+    const total = results.length;
+    if (counts.failed > 0) {
+        return counts.failed === total
+            ? { status: 'failed', label: 'delivery failed' }
+            : { status: 'failed', label: 'delivery partial' };
+    }
+    if (counts.sent > 0) return { status: 'success', label: 'delivery sent' };
+    if (counts.skipped > 0) return { status: 'skipped', label: 'delivery skipped' };
+    return { status: 'none', label: 'delivery unknown' };
+}
+
+function renderDeliveryHistorySummary(summary) {
+    const badgeClass = summary.status === 'none' ? 'muted' : deliveryStatusBadge(summary.status);
+    return `<span class="run-history-status-group delivery-history-status">
+        <span class="badge badge-${badgeClass}">${esc(summary.label)}</span>
+    </span>`;
 }
 
 function formatDurationMs(ms) {

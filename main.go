@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -52,10 +53,18 @@ func main() {
 	}
 
 	// Config paths
-	home, _ := os.UserHomeDir()
-	configDir := filepath.Join(home, ".config", "cronplus")
+	configDir, err := defaultConfigDir()
+	if err != nil {
+		log.Fatalf("[CronPlus] Failed to resolve config dir: %v", err)
+	}
 	tokenPath := filepath.Join(configDir, "auth-token")
 	statePath := filepath.Join(configDir, "state.json")
+
+	daemonLock, err := acquireDaemonLock(filepath.Join(configDir, "daemon.lock"), listenPort)
+	if err != nil {
+		log.Fatalf("[CronPlus] %v", err)
+	}
+	defer daemonLock.Release()
 
 	// Load or create auth token (stable across upgrades)
 	token, err := api.LoadOrCreateToken(tokenPath)
@@ -173,6 +182,8 @@ func runCLICommand(args []string) (bool, int) {
 		}
 		fmt.Print(string(data))
 		return true, 0
+	case "autostart":
+		return true, cliAutostart(args[1:])
 	case "status", "list":
 		return true, cliAPI(args[0], "", nil)
 	case "import":
@@ -276,9 +287,10 @@ func cliCheck(dir string) int {
 }
 
 func cliAPI(command, arg string, body any) int {
-	baseURL := "http://127.0.0.1:9876"
-	if port := os.Getenv("CRONPLUS_PORT"); port != "" {
-		baseURL = "http://127.0.0.1:" + port
+	baseURL, err := cliAPIBaseURL()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "config: %v\n", err)
+		return 1
 	}
 	token, err := readDefaultToken()
 	if err != nil {
@@ -340,9 +352,35 @@ func cliAPI(command, arg string, body any) int {
 	return 0
 }
 
+func cliAPIBaseURL() (string, error) {
+	if port := strings.TrimSpace(os.Getenv("CRONPLUS_PORT")); port != "" {
+		return "http://127.0.0.1:" + port, nil
+	}
+
+	configDir, err := defaultConfigDir()
+	if err != nil {
+		return "", err
+	}
+	if port, err := readDaemonLockPort(filepath.Join(configDir, "daemon.lock")); err == nil && port > 0 {
+		return fmt.Sprintf("http://127.0.0.1:%d", port), nil
+	}
+	return "http://127.0.0.1:9876", nil
+}
+
+func defaultConfigDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(home, ".config", "cronplus"), nil
+}
+
 func readDefaultToken() (string, error) {
-	home, _ := os.UserHomeDir()
-	data, err := os.ReadFile(filepath.Join(home, ".config", "cronplus", "auth-token"))
+	configDir, err := defaultConfigDir()
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(filepath.Join(configDir, "auth-token"))
 	if err != nil {
 		return "", err
 	}

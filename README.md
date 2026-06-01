@@ -149,9 +149,16 @@ cronplus list
 cronplus import /path/to/my-task
 cronplus reload <task-id>
 cronplus run <task-id>
+
+# Manage macOS autostart
+cronplus autostart install
+cronplus autostart status
+cronplus autostart uninstall
 ```
 
 The machine-readable schema is also available in `schemas/manifest.schema.json`.
+
+Daemon API commands use `CRONPLUS_PORT` when it is set. Otherwise they read the active port from `~/.config/cronplus/daemon.lock`, then fall back to `9876`.
 
 ## Features
 
@@ -163,6 +170,7 @@ The machine-readable schema is also available in `schemas/manifest.schema.json`.
 | **Delivery** | Telegram (more drivers planned) |
 | **Inbound Commands** | Control CronPlus via Telegram messages |
 | **Contract Checks** | CLI validation and run checks for AI-authored packages |
+| **Autostart** | macOS LaunchAgent install/status/uninstall command |
 | **Persistence** | JSON file at `~/.config/cronplus/state.json` |
 | **Auth** | Token file, auto-auth for localhost |
 | **Single Binary** | Web UI embedded via `go:embed` |
@@ -251,17 +259,24 @@ CRONPLUS_MAX_CONCURRENT_RUNS=1 ./cronplus
 ### macOS (launchd)
 
 ```bash
-# Install the binary where the plist expects it
+# Install the binary somewhere stable
 make install
 
-# Copy the plist
-cp scripts/launchd/com.cronplus.daemon.plist ~/Library/LaunchAgents/
+# Install and load the user LaunchAgent
+cronplus autostart install
 
-# Load and start
-launchctl load ~/Library/LaunchAgents/com.cronplus.daemon.plist
+# If you run CronPlus on a custom port
+cronplus autostart install --port 9887
+
+# Install for the next login without starting it now
+cronplus autostart install --no-start
+
+# Check or remove it later
+cronplus autostart status
+cronplus autostart uninstall
 ```
 
-The service keeps CronPlus running in the background and restarts it automatically.
+The service keeps CronPlus running in the background, starts it at login, and restarts it automatically. The command writes `~/Library/LaunchAgents/com.cronplus.daemon.plist` and logs to `~/Library/Logs/cronplus.log`.
 
 ## Configuration
 
@@ -270,6 +285,7 @@ All data stored in `~/.config/cronplus/`:
 | File | Purpose |
 |---|---|
 | `auth-token` | API authentication token (stable across upgrades) |
+| `daemon.lock` | Single-daemon lock with current PID, port, and start time |
 | `state.json` | Persisted tasks, profiles, run history |
 
 ## License

@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -649,7 +650,9 @@ func (e *Engine) AddDeliveryProfile(p models.DeliveryProfile) string {
 	p = cloneDeliveryProfile(p)
 	e.mu.Lock()
 	if p.ID == "" {
-		p.ID = generateID()
+		p.ID = e.nextDeliveryProfileIDLocked(p)
+	} else {
+		p.ID = e.uniqueDeliveryProfileIDLocked(p.ID)
 	}
 	e.deliveryProfiles = append(e.deliveryProfiles, p)
 	e.mu.Unlock()
@@ -679,6 +682,21 @@ func (e *Engine) RemoveDeliveryProfile(id string) error {
 	for i, p := range e.deliveryProfiles {
 		if p.ID == id {
 			e.deliveryProfiles = append(e.deliveryProfiles[:i], e.deliveryProfiles[i+1:]...)
+			e.mu.Unlock()
+			e.notifyDeliveryProfilesChanged()
+			return nil
+		}
+	}
+	e.mu.Unlock()
+	return fmt.Errorf("delivery profile not found: %s", id)
+}
+
+// SetDeliveryProfileCommands enables or disables inbound commands for a profile.
+func (e *Engine) SetDeliveryProfileCommands(id string, enabled bool) error {
+	e.mu.Lock()
+	for i := range e.deliveryProfiles {
+		if e.deliveryProfiles[i].ID == id {
+			e.deliveryProfiles[i].InboundCommandsEnabled = enabled
 			e.mu.Unlock()
 			e.notifyDeliveryProfilesChanged()
 			return nil
@@ -791,6 +809,37 @@ func generateID() string {
 		return fmt.Sprintf("%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
+}
+
+func (e *Engine) nextDeliveryProfileIDLocked(profile models.DeliveryProfile) string {
+	base := models.Slugify(profile.Name)
+	if base == "" {
+		base = models.Slugify(profile.DriverType)
+	}
+	if base == "" {
+		return generateID()
+	}
+	return e.uniqueDeliveryProfileIDLocked(base)
+}
+
+func (e *Engine) uniqueDeliveryProfileIDLocked(base string) string {
+	base = strings.TrimSpace(base)
+	if base == "" {
+		return generateID()
+	}
+	exists := make(map[string]bool, len(e.deliveryProfiles))
+	for _, existing := range e.deliveryProfiles {
+		exists[existing.ID] = true
+	}
+	if !exists[base] {
+		return base
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", base, i)
+		if !exists[candidate] {
+			return candidate
+		}
+	}
 }
 
 func fileHashAndModTime(path string) (string, time.Time, error) {

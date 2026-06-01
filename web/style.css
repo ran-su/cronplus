@@ -607,6 +607,21 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     box-shadow: 0 0 0 3px var(--accent-glow);
 }
 
+.checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    color: var(--text-secondary);
+    font-size: 14px;
+    user-select: none;
+}
+
+.checkbox-row input {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--accent);
+}
+
 /* ===== Detail Page ===== */
 
 .detail-header {

@@ -5,6 +5,10 @@ let authToken = localStorage.getItem('cronplus_token') || '';
 let sseConnection = null;
 let currentPage = 'dashboard';
 let appState = { status: null, tasks: [], taskDetails: {}, taskDetailLoading: {}, taskDetailErrors: {}, deliveries: [], commands: [] };
+let appStateSignatures = { status: '', tasks: '', deliveries: '', commands: '' };
+let refreshInFlight = false;
+let refreshQueued = false;
+let refreshQueuedForceRender = false;
 let deliveryPreviewText = '';
 
 // ===== Auth =====
@@ -112,48 +116,129 @@ async function api(method, path, body) {
     }
 }
 
-async function refreshAll() {
+async function refreshAll(options = {}) {
+    if (refreshInFlight) {
+        refreshQueued = true;
+        refreshQueuedForceRender = refreshQueuedForceRender || !!options.forceRender;
+        return;
+    }
+
+    refreshInFlight = true;
+    try {
+        await performRefreshAll(options);
+    } finally {
+        refreshInFlight = false;
+        if (refreshQueued) {
+            const queuedOptions = { forceRender: refreshQueuedForceRender };
+            refreshQueued = false;
+            refreshQueuedForceRender = false;
+            refreshAll(queuedOptions);
+        }
+    }
+}
+
+async function performRefreshAll(options = {}) {
     const [status, tasks, deliveries, commands] = await Promise.all([
         api('GET', '/api/status'),
         api('GET', '/api/tasks'),
         api('GET', '/api/deliveries'),
         api('GET', '/api/commands')
     ]);
-    if (status && !status.error) appState.status = status;
+
+    let changed = !!options.forceRender;
+    const changes = {
+        status: !!options.forceRender,
+        tasks: !!options.forceRender,
+        deliveries: !!options.forceRender,
+        commands: !!options.forceRender
+    };
+    if (status && !status.error) {
+        const sig = stateSignature(status);
+        if (sig !== appStateSignatures.status) {
+            appState.status = status;
+            appStateSignatures.status = sig;
+            changed = true;
+            changes.status = true;
+        }
+    }
     if (tasks && !tasks.error) {
-        appState.tasks = tasks.tasks || [];
-        appState.taskDetails = {};
-        appState.taskDetailErrors = {};
+        const nextTasks = tasks.tasks || [];
+        const sig = stateSignature(nextTasks);
+        if (sig !== appStateSignatures.tasks) {
+            appState.tasks = nextTasks;
+            appState.taskDetails = {};
+            appState.taskDetailErrors = {};
+            appStateSignatures.tasks = sig;
+            changed = true;
+            changes.tasks = true;
+        }
     }
-    if (deliveries && !deliveries.error) appState.deliveries = deliveries.profiles || [];
-    if (commands && !commands.error) appState.commands = commands.commands || [];
-    if (!hasActiveEditorState()) {
-        renderCurrentPage();
+    if (deliveries && !deliveries.error) {
+        const nextDeliveries = deliveries.profiles || [];
+        const sig = stateSignature(nextDeliveries);
+        if (sig !== appStateSignatures.deliveries) {
+            appState.deliveries = nextDeliveries;
+            appStateSignatures.deliveries = sig;
+            changed = true;
+            changes.deliveries = true;
+        }
     }
+    if (commands && !commands.error) {
+        const nextCommands = commands.commands || [];
+        const sig = stateSignature(nextCommands);
+        if (sig !== appStateSignatures.commands) {
+            appState.commands = nextCommands;
+            appStateSignatures.commands = sig;
+            changed = true;
+            changes.commands = true;
+        }
+    }
+    if (changed && !hasActiveEditorState()) {
+        updateCurrentPage(changes);
+    }
+}
+
+function stateSignature(value) {
+    return JSON.stringify(value || null);
 }
 
 // ===== SSE =====
 
 let sseRetryDelay = 1000;
+let sseReconnectTimer = null;
 const SSE_MAX_RETRY = 30000;
 
 function connectSSE() {
-    if (sseConnection) sseConnection.close();
+    if (sseReconnectTimer) {
+        clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+    }
+    if (sseConnection) {
+        sseConnection.onopen = null;
+        sseConnection.onerror = null;
+        sseConnection.close();
+    }
 
     // SSE doesn't support custom headers, so we pass token as query param
     sseConnection = new EventSource(`${API_BASE}/api/events?token=${authToken}`);
+    const connection = sseConnection;
 
     sseConnection.onopen = () => {
+        if (sseConnection !== connection) return;
         sseRetryDelay = 1000;
         document.querySelector('.status-dot').classList.remove('disconnected');
         document.querySelector('.status-text').textContent = 'Connected';
     };
 
     sseConnection.onerror = () => {
+        if (sseConnection !== connection) return;
         document.querySelector('.status-dot').classList.add('disconnected');
         document.querySelector('.status-text').textContent = 'Disconnected';
-        sseConnection.close();
-        setTimeout(() => {
+        connection.close();
+        sseConnection = null;
+        if (document.getElementById('main-app').style.display === 'none') return;
+        sseReconnectTimer = setTimeout(() => {
+            sseReconnectTimer = null;
             sseRetryDelay = Math.min(sseRetryDelay * 2, SSE_MAX_RETRY);
             connectSSE();
         }, sseRetryDelay);
@@ -164,8 +249,13 @@ function connectSSE() {
     sseConnection.addEventListener('task_updated', () => refreshAll());
     sseConnection.addEventListener('status', (e) => {
         try {
-            appState.status = JSON.parse(e.data);
-            if (!hasActiveEditorState()) renderCurrentPage();
+            const status = JSON.parse(e.data);
+            const sig = stateSignature(status);
+            if (sig !== appStateSignatures.status) {
+                appState.status = status;
+                appStateSignatures.status = sig;
+                if (!hasActiveEditorState()) updateCurrentPage({ status: true });
+            }
         } catch {}
     });
 }
@@ -195,6 +285,25 @@ document.addEventListener('keydown', (e) => {
     }
 });
 
+document.addEventListener('click', (e) => {
+    if (!(e.target instanceof Element)) return;
+    const button = e.target.closest('[data-profile-action]');
+    if (!button) return;
+
+    const id = button.dataset.profileId || '';
+    switch (button.dataset.profileAction) {
+        case 'toggle-commands':
+            toggleProfileCommands(id, button.dataset.profileEnabled === 'true');
+            break;
+        case 'test':
+            testProfile(id);
+            break;
+        case 'delete':
+            deleteProfile(id);
+            break;
+    }
+});
+
 function renderCurrentPage() {
     const content = document.getElementById('content');
     const path = currentPage;
@@ -218,16 +327,67 @@ function renderCurrentPage() {
     else content.innerHTML = '<div class="empty-state"><h3>Page not found</h3></div>';
 }
 
+function updateCurrentPage(changes = {}) {
+    const path = currentPage;
+
+    if (path === '/' || path === '/dashboard') {
+        const el = document.getElementById('dashboard-content');
+        if (el) {
+            el.innerHTML = renderDashboardContent();
+            return;
+        }
+    } else if (path === '/tasks') {
+        const el = document.getElementById('task-list-content');
+        if (el) {
+            el.innerHTML = renderTaskListContent();
+            return;
+        }
+    } else if (path === '/delivery') {
+        const el = document.getElementById('delivery-list-content');
+        if (el) {
+            el.innerHTML = renderDeliveryList();
+            return;
+        }
+    } else if (path === '/commands') {
+        const el = document.getElementById('commands-content');
+        if (el) {
+            el.innerHTML = renderCommandsContent();
+            return;
+        }
+    } else if (path === '/settings') {
+        const version = document.getElementById('settings-version');
+        if (version && changes.status) {
+            version.textContent = appState.status?.version || 'N/A';
+            return;
+        }
+    } else if (path.startsWith('/tasks/') && !path.includes('/runs/')) {
+        const taskID = path.split('/')[2];
+        if (changes.tasks) {
+            loadTaskDetail(taskID, { force: true });
+            loadRunHistory(taskID);
+            return;
+        }
+    }
+
+    renderCurrentPage();
+}
+
 // ===== Dashboard =====
 
 function renderDashboard() {
-    const s = appState.status || {};
-    const t = s.tasks || {};
     return `
         <div class="page-header">
             <h1>Dashboard</h1>
             <p>Overview of your automation tasks</p>
         </div>
+        <div id="dashboard-content">${renderDashboardContent()}</div>
+    `;
+}
+
+function renderDashboardContent() {
+    const s = appState.status || {};
+    const t = s.tasks || {};
+    return `
         <div class="stats-grid">
             <div class="stat-card">
                 <div class="stat-label">Total Tasks</div>
@@ -270,6 +430,12 @@ function renderTaskList() {
             </div>
             <button class="btn btn-primary" onclick="promptImportTask()">+ Import Task</button>
         </div>
+        <div id="task-list-content">${renderTaskListContent()}</div>
+    `;
+}
+
+function renderTaskListContent() {
+    return `
         ${appState.tasks.length === 0 ?
             '<div class="empty-state"><div class="icon">📋</div><h3>No tasks yet</h3><p>Import a task package to get started.</p></div>' :
             renderTaskCards(appState.tasks)
@@ -392,8 +558,8 @@ function renderTaskDetail(path) {
     `;
 }
 
-async function loadTaskDetail(taskID) {
-    if (appState.taskDetails[taskID] || appState.taskDetailLoading[taskID]) return;
+async function loadTaskDetail(taskID, options = {}) {
+    if (!options.force && (appState.taskDetails[taskID] || appState.taskDetailLoading[taskID])) return;
     appState.taskDetailLoading[taskID] = true;
     const data = await api('GET', `/api/tasks/${taskID}`);
     delete appState.taskDetailLoading[taskID];
@@ -554,20 +720,27 @@ function renderDelivery() {
             </div>
             <button class="btn btn-primary" onclick="showAddProfileModal()">+ Add Profile</button>
         </div>
+        <div id="delivery-list-content">${renderDeliveryList()}</div>
+        <div id="profile-modal"></div>
+    `;
+}
+
+function renderDeliveryList() {
+    return `
         ${appState.deliveries.length === 0 ?
             '<div class="empty-state"><div class="icon">📬</div><h3>No delivery profiles</h3><p>Add a Telegram profile to receive task results.</p></div>' :
             `<div class="task-list">${appState.deliveries.map(p => `
                 <div class="task-row" style="cursor:default">
                     <div class="task-info">
                         <div class="task-name">${esc(p.name)}</div>
-                        <div class="task-meta">${esc(p.driverType)} ${p.enabled ? '' : '· Disabled'} ${p.inboundCommandsEnabled ? '· Commands enabled' : ''}</div>
+                        <div class="task-meta">ID: <span style="font-family:var(--font-mono)">${esc(p.id)}</span> · ${esc(p.driverType)} ${p.enabled ? '' : '· Disabled'} ${p.inboundCommandsEnabled ? '· Commands enabled' : ''}</div>
                     </div>
-                    <button class="btn btn-sm" onclick="testProfile('${p.id}')">Test</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteProfile('${p.id}')">Delete</button>
+                    <button class="btn btn-sm" data-profile-action="toggle-commands" data-profile-id="${esc(p.id)}" data-profile-enabled="${!p.inboundCommandsEnabled}">${p.inboundCommandsEnabled ? 'Disable Commands' : 'Enable Commands'}</button>
+                    <button class="btn btn-sm" data-profile-action="test" data-profile-id="${esc(p.id)}">Test</button>
+                    <button class="btn btn-sm btn-danger" data-profile-action="delete" data-profile-id="${esc(p.id)}">Delete</button>
                 </div>
             `).join('')}</div>`
         }
-        <div id="profile-modal"></div>
     `;
 }
 
@@ -578,7 +751,11 @@ function showAddProfileModal() {
                 <h2>Add Telegram Profile</h2>
                 <div class="form-group">
                     <label class="form-label">Profile Name</label>
-                    <input class="form-input" id="new-profile-name" value="Telegram" />
+                    <input class="form-input" id="new-profile-name" value="My Telegram" oninput="syncNewProfileID()" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Profile ID</label>
+                    <input class="form-input" id="new-profile-id" value="my-telegram" placeholder="my-telegram" oninput="this.dataset.touched='true'" />
                 </div>
                 <div class="form-group">
                     <label class="form-label">Bot Token</label>
@@ -588,6 +765,10 @@ function showAddProfileModal() {
                     <label class="form-label">Chat ID</label>
                     <input class="form-input" id="new-profile-chat" placeholder="-100123456789" />
                 </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="new-profile-commands" />
+                    <span>Enable Telegram commands for this chat</span>
+                </label>
                 <div class="modal-actions">
                     <button class="btn" onclick="document.getElementById('profile-modal').innerHTML=''">Cancel</button>
                     <button class="btn btn-primary" onclick="createProfile()">Create</button>
@@ -597,16 +778,52 @@ function showAddProfileModal() {
     `;
 }
 
+function syncNewProfileID() {
+    const nameInput = document.getElementById('new-profile-name');
+    const idInput = document.getElementById('new-profile-id');
+    if (!nameInput || !idInput || idInput.dataset.touched === 'true') return;
+    idInput.value = slugifyProfileID(nameInput.value);
+}
+
+function slugifyProfileID(value) {
+    return String(value || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9_-]+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '');
+}
+
+function deliveryIDPath(id) {
+    return encodeURIComponent(id);
+}
+
 async function createProfile() {
+    const name = document.getElementById('new-profile-name').value.trim();
+    const botToken = document.getElementById('new-profile-token').value.trim();
+    const chatID = document.getElementById('new-profile-chat').value.trim();
+    const idInput = document.getElementById('new-profile-id');
+    const profileID = slugifyProfileID(idInput.value.trim() || name);
+    if (!name || !botToken || !chatID) {
+        toast('Name, bot token, and chat ID are required', 'error');
+        return;
+    }
+    if (!profileID) {
+        toast('Profile ID must include letters or numbers', 'error');
+        return;
+    }
     const profile = {
-        name: document.getElementById('new-profile-name').value,
+        name,
         driverType: 'telegram',
         enabled: true,
+        inboundCommandsEnabled: document.getElementById('new-profile-commands').checked,
         config: {
-            bot_token: document.getElementById('new-profile-token').value,
-            chat_id: document.getElementById('new-profile-chat').value
+            bot_token: botToken,
+            chat_id: chatID
         }
     };
+    if (idInput.dataset.touched === 'true') {
+        profile.id = profileID;
+    }
     const result = await api('POST', '/api/deliveries', profile);
     if (result?.error) {
         toast(result.message || 'Profile could not be created', 'error');
@@ -619,7 +836,7 @@ async function createProfile() {
 
 async function deleteProfile(id) {
     if (!confirm('Delete this delivery profile?')) return;
-    const result = await api('DELETE', `/api/deliveries/${id}`);
+    const result = await api('DELETE', `/api/deliveries/${deliveryIDPath(id)}`);
     if (result?.error) {
         toast(result.message || 'Profile could not be deleted', 'error');
         return;
@@ -629,12 +846,23 @@ async function deleteProfile(id) {
 }
 
 async function testProfile(id) {
-    const result = await api('POST', `/api/deliveries/${id}/test`, { message: 'CronPlus delivery test' });
+    const result = await api('POST', `/api/deliveries/${deliveryIDPath(id)}/test`, { message: 'CronPlus delivery test' });
     if (result?.error) {
         toast(result.message || 'Delivery test failed', 'error');
         return;
     }
     toast('Test message sent', 'success');
+}
+
+async function toggleProfileCommands(id, enabled) {
+    const action = enabled ? 'enable' : 'disable';
+    const result = await api('POST', `/api/deliveries/${deliveryIDPath(id)}/commands/${action}`);
+    if (result?.error) {
+        toast(result.message || 'Command setting could not be changed', 'error');
+        return;
+    }
+    toast(enabled ? 'Commands enabled' : 'Commands disabled', 'success');
+    refreshAll();
 }
 
 // ===== Commands =====
@@ -648,6 +876,12 @@ function renderCommands() {
             </div>
             ${appState.commands.length > 0 ? '<button class="btn btn-danger btn-sm" onclick="clearCommands()">Clear Log</button>' : ''}
         </div>
+        <div id="commands-content">${renderCommandsContent()}</div>
+    `;
+}
+
+function renderCommandsContent() {
+    return `
         ${appState.commands.length === 0 ?
             '<div class="empty-state"><div class="icon">💬</div><h3>No commands received</h3></div>' :
             `<div class="table-wrapper"><table>
@@ -694,7 +928,7 @@ function renderSettings() {
         </div>
         <div class="detail-card" style="max-width:500px;margin-top:16px">
             <h3>Version</h3>
-            <p>${appState.status?.version || 'N/A'}</p>
+            <p id="settings-version">${appState.status?.version || 'N/A'}</p>
         </div>
     `;
 }
@@ -926,7 +1160,16 @@ function toast(message, type = 'info') {
 function logout() {
     localStorage.removeItem('cronplus_token');
     authToken = '';
-    if (sseConnection) sseConnection.close();
+    if (sseReconnectTimer) {
+        clearTimeout(sseReconnectTimer);
+        sseReconnectTimer = null;
+    }
+    if (sseConnection) {
+        sseConnection.onopen = null;
+        sseConnection.onerror = null;
+        sseConnection.close();
+        sseConnection = null;
+    }
     showLogin();
 }
 

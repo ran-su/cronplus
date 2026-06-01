@@ -29,6 +29,8 @@ func Routes(mux *http.ServeMux, engine *core.Engine, version string) {
 	mux.HandleFunc("GET /api/deliveries", handleGetDeliveries(engine))
 	mux.HandleFunc("POST /api/deliveries", handleCreateDelivery(engine))
 	mux.HandleFunc("PUT /api/deliveries/{id}", handleUpdateDelivery(engine))
+	mux.HandleFunc("POST /api/deliveries/{id}/commands/enable", handleSetDeliveryCommands(engine, true))
+	mux.HandleFunc("POST /api/deliveries/{id}/commands/disable", handleSetDeliveryCommands(engine, false))
 	mux.HandleFunc("POST /api/deliveries/{id}/test", handleTestDelivery(engine))
 	mux.HandleFunc("DELETE /api/deliveries/{id}", handleDeleteDelivery(engine))
 	mux.HandleFunc("GET /api/commands", handleGetCommands(engine))
@@ -415,6 +417,20 @@ func handleDeleteDelivery(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		if err := engine.RemoveDeliveryProfile(id); err != nil {
+			writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
+			return
+		}
+		if !persistOrError(w, engine) {
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	}
+}
+
+func handleSetDeliveryCommands(engine *core.Engine, enabled bool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if err := engine.SetDeliveryProfileCommands(id, enabled); err != nil {
 			writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
 			return
 		}

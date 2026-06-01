@@ -35,7 +35,7 @@ func (r *Router) Route(msg models.InboundMessage) *models.OutboundReply {
 	}
 
 	parts := strings.Fields(text)
-	command := strings.ToLower(parts[0])
+	command := normalizeCommand(parts[0])
 	args := parts[1:]
 
 	switch command {
@@ -235,6 +235,14 @@ func (r *Router) findTaskBySlug(slug string) *models.Task {
 
 func reply(text string) *models.OutboundReply {
 	return &models.OutboundReply{Text: text, Format: "plain"}
+}
+
+func normalizeCommand(token string) string {
+	token = strings.ToLower(strings.TrimSpace(token))
+	if at := strings.IndexByte(token, '@'); at > 0 {
+		token = token[:at]
+	}
+	return token
 }
 
 func formatDuration(d time.Duration) string {

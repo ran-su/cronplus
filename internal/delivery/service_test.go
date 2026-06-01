@@ -160,6 +160,22 @@ func TestDeliver_ProfileNotFound(t *testing.T) {
 	}
 }
 
+func TestDeliver_MatchesProfileByUniqueNameSlug(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "opaque-id", Name: "My Telegram", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"my-telegram"}, []string{"success"})
+	run := makeRun(0, "success", "done")
+	results := svc.Deliver(task, run, profiles)
+	if len(results) != 1 || results[0].Status != "success" || results[0].ProfileID != "opaque-id" {
+		t.Errorf("expected delivery through unique name slug alias, got %+v", results)
+	}
+}
+
 func TestDeliver_DriverFailure(t *testing.T) {
 	mock := &mockDriver{failOnSend: true}
 	svc := NewService(mock)

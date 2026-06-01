@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -193,15 +194,16 @@ func profileAuthorizedForChat(profiles []models.DeliveryProfile, chatID string) 
 }
 
 func profileAllowsChat(profile models.DeliveryProfile, chatID string) bool {
+	chatID = strings.TrimSpace(chatID)
 	if len(profile.AuthorizedChatIDs) > 0 {
 		for _, id := range profile.AuthorizedChatIDs {
-			if id == chatID {
+			if strings.TrimSpace(id) == chatID {
 				return true
 			}
 		}
 		return false
 	}
-	return profile.Config["chat_id"] == chatID
+	return strings.TrimSpace(profile.Config["chat_id"]) == chatID
 }
 
 func (p *Poller) handleUpdate(ctx context.Context, botToken string, update delivery.TelegramUpdate, chatIDStr string, rl *rateLimiter) {
@@ -254,15 +256,11 @@ func (p *Poller) handleUpdate(ctx context.Context, botToken string, update deliv
 }
 
 func extractCommand(text string) string {
-	if len(text) > 0 && text[0] == '/' {
-		for i, c := range text {
-			if c == ' ' {
-				return text[:i]
-			}
-		}
-		return text
+	parts := strings.Fields(text)
+	if len(parts) == 0 || !strings.HasPrefix(parts[0], "/") {
+		return ""
 	}
-	return ""
+	return normalizeCommand(parts[0])
 }
 
 // --- Rate Limiter ---

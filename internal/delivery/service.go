@@ -67,16 +67,12 @@ func (s *Service) Deliver(
 		return nil
 	}
 
-	// Build profile lookup
-	profileMap := make(map[string]models.DeliveryProfile)
-	for _, p := range profiles {
-		profileMap[p.ID] = p
-	}
+	profileLookup := newProfileLookup(profiles)
 
 	// Send to each profile
 	var results []models.DeliveryResult
 	for _, profileID := range delivery.Profiles {
-		profile, ok := profileMap[profileID]
+		profile, ok := profileLookup.get(profileID)
 		if !ok {
 			results = append(results, models.DeliveryResult{
 				ProfileID:   profileID,
@@ -128,6 +124,70 @@ func (s *Service) Deliver(
 	}
 
 	return results
+}
+
+type profileLookup struct {
+	byID      map[string]models.DeliveryProfile
+	aliases   map[string]models.DeliveryProfile
+	ambiguous map[string]bool
+}
+
+func newProfileLookup(profiles []models.DeliveryProfile) profileLookup {
+	lookup := profileLookup{
+		byID:      make(map[string]models.DeliveryProfile),
+		aliases:   make(map[string]models.DeliveryProfile),
+		ambiguous: make(map[string]bool),
+	}
+
+	for _, profile := range profiles {
+		id := strings.TrimSpace(profile.ID)
+		if id != "" {
+			lookup.byID[id] = profile
+		}
+		lookup.addAlias(profile.Name, profile)
+		lookup.addAlias(models.Slugify(profile.Name), profile)
+	}
+
+	return lookup
+}
+
+func (p profileLookup) addAlias(alias string, profile models.DeliveryProfile) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		return
+	}
+	p.addNormalizedAlias(alias, profile)
+	lower := strings.ToLower(alias)
+	if lower != alias {
+		p.addNormalizedAlias(lower, profile)
+	}
+}
+
+func (p profileLookup) addNormalizedAlias(alias string, profile models.DeliveryProfile) {
+	if p.ambiguous[alias] {
+		return
+	}
+	if existing, ok := p.aliases[alias]; ok && existing.ID != profile.ID {
+		delete(p.aliases, alias)
+		p.ambiguous[alias] = true
+		return
+	}
+	p.aliases[alias] = profile
+}
+
+func (p profileLookup) get(profileID string) (models.DeliveryProfile, bool) {
+	profileID = strings.TrimSpace(profileID)
+	if profileID == "" {
+		return models.DeliveryProfile{}, false
+	}
+	if profile, ok := p.byID[profileID]; ok {
+		return profile, true
+	}
+	if p.ambiguous[profileID] {
+		return models.DeliveryProfile{}, false
+	}
+	profile, ok := p.aliases[profileID]
+	return profile, ok
 }
 
 // PreviewMessage renders the message that would be sent for a run without sending it.

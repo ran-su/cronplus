@@ -234,6 +234,57 @@ func TestEngineQueriesReturnCopies(t *testing.T) {
 	}
 }
 
+func TestAddDeliveryProfileUsesNameSlugID(t *testing.T) {
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+
+	id := engine.AddDeliveryProfile(models.DeliveryProfile{
+		Name:       "My Telegram",
+		DriverType: "telegram",
+		Enabled:    true,
+	})
+	if id != "my-telegram" {
+		t.Fatalf("id = %q, want my-telegram", id)
+	}
+
+	id2 := engine.AddDeliveryProfile(models.DeliveryProfile{
+		Name:       "My Telegram",
+		DriverType: "telegram",
+		Enabled:    true,
+	})
+	if id2 != "my-telegram-2" {
+		t.Fatalf("second id = %q, want my-telegram-2", id2)
+	}
+}
+
+func TestAddDeliveryProfileMakesExplicitDuplicateIDUnique(t *testing.T) {
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+
+	id := engine.AddDeliveryProfile(models.DeliveryProfile{
+		ID:         "telegram",
+		Name:       "Primary",
+		DriverType: "telegram",
+		Enabled:    true,
+	})
+	if id != "telegram" {
+		t.Fatalf("id = %q, want telegram", id)
+	}
+
+	id2 := engine.AddDeliveryProfile(models.DeliveryProfile{
+		ID:         "telegram",
+		Name:       "Duplicate",
+		DriverType: "telegram",
+		Enabled:    true,
+	})
+	if id2 != "telegram-2" {
+		t.Fatalf("second id = %q, want telegram-2", id2)
+	}
+
+	profiles := engine.DeliveryProfiles()
+	if len(profiles) != 2 || profiles[0].ID == profiles[1].ID {
+		t.Fatalf("profile IDs are not unique: %+v", profiles)
+	}
+}
+
 func waitForActiveRunDetail(t *testing.T, engine *Engine, taskID string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

@@ -106,3 +106,35 @@ func TestParseResult_WithDeliverable(t *testing.T) {
 		t.Errorf("deliverable.body = %q, want %q", result.Deliverable.Body, "hello")
 	}
 }
+
+func TestParseResult_PreservesArbitraryFields(t *testing.T) {
+	stdout := `CRONPLUS_RESULT={"status":"success","message":"hello","payload":{"body":"nested"}}` + "\n"
+	result := ParseResult(stdout, "CRONPLUS_RESULT=")
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if got, want := result.Fields["message"], "hello"; got != want {
+		t.Fatalf("fields.message = %q, want %q", got, want)
+	}
+	payload, ok := result.Fields["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("fields.payload = %T, want map[string]any", result.Fields["payload"])
+	}
+	if got, want := payload["body"], "nested"; got != want {
+		t.Fatalf("fields.payload.body = %q, want %q", got, want)
+	}
+}
+
+func TestParseResult_AllowsTaskDefinedSummaryAndDeliverableShapes(t *testing.T) {
+	stdout := `CRONPLUS_RESULT={"status":"success","summary":{"text":"ok"},"deliverable":"send this"}` + "\n"
+	result := ParseResult(stdout, "CRONPLUS_RESULT=")
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if got, want := result.Status, "success"; got != want {
+		t.Fatalf("status = %q, want %q", got, want)
+	}
+	if got, want := result.Fields["deliverable"], "send this"; got != want {
+		t.Fatalf("fields.deliverable = %q, want %q", got, want)
+	}
+}

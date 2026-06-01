@@ -7,7 +7,7 @@ Scripts can optionally output a structured result by printing a JSON line with a
 ## Format
 
 ```
-CRONPLUS_RESULT={"status":"success","summary":"3 items found","deliverable":{"kind":"text","body":"3 items found"}}
+CRONPLUS_RESULT={"status":"success","message":"3 items found","details":{"count":3}}
 ```
 
 ## Rules
@@ -18,20 +18,15 @@ CRONPLUS_RESULT={"status":"success","summary":"3 items found","deliverable":{"ki
 4. If missing, CronPlus records the run using exit code + raw logs only.
 5. If the JSON is invalid, the structured result is ignored.
 6. If `status` is present but unknown, CronPlus changes it to `failure` and adds an invalid-status diagnostic to the summary.
+7. Fields other than `status` are task-defined and are passed through for UI/API storage and delivery templates.
 
 ## Result Schema
 
 ```json
 {
   "status": "success",
-  "summary": "3 new items found",
-  "deliverable": {
-    "kind": "text",
-    "title": "Price Alert",
-    "body": "3 new items found",
-    "format": "plain"
-  },
-  "data": {
+  "message": "3 new items found",
+  "details": {
     "count": 3
   }
 }
@@ -41,36 +36,25 @@ CRONPLUS_RESULT={"status":"success","summary":"3 items found","deliverable":{"ki
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `status` | string | No | `"success"`, `"failure"`, `"warning"`, `"skipped"` (`"failed"` is accepted as a compatibility alias for `"failure"`). If omitted, run status falls back to exit code. |
-| `summary` | string | No | One-line summary for UI and delivery |
-| `deliverable` | object | No | Structured payload for delivery channels |
-| `deliverable.kind` | string | No | `"text"` (future: `"image"`, `"file"`) |
-| `deliverable.title` | string | No | Title for the delivery message |
-| `deliverable.body` | string | No | Body content for delivery |
-| `deliverable.format` | string | No | `"plain"` or `"markdown"` |
-| `data` | object | No | Arbitrary data for programmatic use |
+| `status` | string | Yes | `"success"`, `"failure"`, `"warning"`, `"skipped"` (`"failed"` is accepted as a compatibility alias for `"failure"`). CronPlus uses this field for run state and `delivery.send_on` matching. |
+| any other field | any JSON value | No | Task-defined data. CronPlus stores it and makes it available to delivery templates without prescribing its shape. |
 
 ## Delivery Message Flow
 
 1. Script finishes → CronPlus parses result
 2. Check `delivery.send_on` conditions against `status`
-3. If conditions match, render `message_template` with result data
-4. Send to each configured delivery profile
+3. If conditions match, render `message_template` against the parsed JSON object
+4. Send to each configured delivery profile only when the rendered message is not empty
 
 ## Message Template Data
 
-Delivery templates are Go text templates. These keys are available:
+Delivery templates are Go text templates. The parsed result JSON object is the template root:
 
-| Key | Value |
-|---|---|
-| `.TaskName` / `.task` | Task display name |
-| `.Status` / `.status` | Canonical run status |
-| `.Summary` / `.summary` | Structured result summary |
-| `.Body` / `.body` | `deliverable.body` |
-| `.ExitCode` / `.exitcode` | Process exit code |
-| `.Duration` / `.duration` | Duration in seconds |
-| `.Stdout` / `.stdout` | First 500 bytes of stdout captured for delivery |
-| `.Stderr` / `.stderr` | First 500 bytes of stderr captured for delivery |
-| `.Data` / `.data` | Structured result data object |
+```yaml
+delivery:
+  message_template: |
+    {{message}}
+    Count: {{details.count}}
+```
 
-Older template forms such as `{{status}}` and `{{data.price}}` are rewritten to Go-template field syntax when the key is supported.
+Short field forms such as `{{status}}`, `{{message}}`, and `{{details.count}}` are rewritten to Go-template field syntax.

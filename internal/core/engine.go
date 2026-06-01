@@ -954,6 +954,8 @@ func cloneRunRecord(record models.RunRecord) models.RunRecord {
 	record.DeliveryResults = append([]models.DeliveryResult(nil), record.DeliveryResults...)
 	if record.Outcome.ParsedResult != nil {
 		parsed := *record.Outcome.ParsedResult
+		parsed.Fields = cloneAnyMap(record.Outcome.ParsedResult.Fields)
+		parsed.Data = cloneAnyValue(record.Outcome.ParsedResult.Data)
 		if record.Outcome.ParsedResult.Deliverable != nil {
 			deliverable := *record.Outcome.ParsedResult.Deliverable
 			parsed.Deliverable = &deliverable
@@ -989,4 +991,30 @@ func cloneStringMap(in map[string]string) map[string]string {
 		out[k] = v
 	}
 	return out
+}
+
+func cloneAnyMap(in map[string]any) map[string]any {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		out[key] = cloneAnyValue(value)
+	}
+	return out
+}
+
+func cloneAnyValue(value any) any {
+	switch typed := value.(type) {
+	case map[string]any:
+		return cloneAnyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = cloneAnyValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
 }

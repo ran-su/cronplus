@@ -223,7 +223,11 @@ func (s *Service) buildMessage(
 	summary := ""
 	body := ""
 	var dataObj any
+	data := map[string]any{}
 	if record.Outcome.ParsedResult != nil {
+		for key, value := range record.Outcome.ParsedResult.Fields {
+			data[key] = value
+		}
 		summary = record.Outcome.ParsedResult.Summary
 		dataObj = record.Outcome.ParsedResult.Data
 		if record.Outcome.ParsedResult.Deliverable != nil {
@@ -231,52 +235,53 @@ func (s *Service) buildMessage(
 		}
 	}
 
-	data := map[string]any{
-		"task":     task.DisplayName,
-		"status":   status,
-		"summary":  summary,
-		"exitcode": record.Outcome.ExitCode,
-		"duration": float64(record.Outcome.DurationMs) / 1000.0,
-		"stdout":   truncateStr(record.Outcome.Stdout, 500),
-		"stderr":   truncateStr(record.Outcome.Stderr, 500),
-		"body":     body,
-		"data":     dataObj,
+	setTemplateDefault(data, "task", task.DisplayName)
+	data["status"] = status
+	setTemplateDefault(data, "summary", summary)
+	setTemplateDefault(data, "exitcode", record.Outcome.ExitCode)
+	setTemplateDefault(data, "duration", float64(record.Outcome.DurationMs)/1000.0)
+	setTemplateDefault(data, "stdout", truncateStr(record.Outcome.Stdout, 500))
+	setTemplateDefault(data, "stderr", truncateStr(record.Outcome.Stderr, 500))
+	setTemplateDefault(data, "body", body)
+	setTemplateDefault(data, "data", dataObj)
+	setTemplateDefault(data, "TaskName", data["task"])
+	setTemplateDefault(data, "Status", data["status"])
+	setTemplateDefault(data, "Summary", data["summary"])
+	setTemplateDefault(data, "ExitCode", data["exitcode"])
+	setTemplateDefault(data, "Duration", data["duration"])
+	setTemplateDefault(data, "Stdout", data["stdout"])
+	setTemplateDefault(data, "Stderr", data["stderr"])
+	setTemplateDefault(data, "Body", data["body"])
+	setTemplateDefault(data, "Data", data["data"])
+	if deliverable, ok := data["deliverable"]; ok {
+		setTemplateDefault(data, "Deliverable", deliverable)
 	}
-	data["TaskName"] = data["task"]
-	data["Status"] = data["status"]
-	data["Summary"] = data["summary"]
-	data["ExitCode"] = data["exitcode"]
-	data["Duration"] = data["duration"]
-	data["Stdout"] = data["stdout"]
-	data["Stderr"] = data["stderr"]
-	data["Body"] = data["body"]
-	data["Data"] = data["data"]
 
 	// Use custom template if provided
 	if tmplStr != "" {
-		// Preprocess old V1 style templates {{status}}, {{data.price}} -> {{.status}}, {{.data.price}}
-		re := regexp.MustCompile(`{{\s*([a-zA-Z0-9_.]+)\s*}}`)
+		// Preprocess short field templates {{status}}, {{data.price}} -> {{.status}}, {{.data.price}}.
+		re := regexp.MustCompile(`{{\s*([a-zA-Z_][a-zA-Z0-9_]*(?:\.[a-zA-Z_][a-zA-Z0-9_]*)*)\s*}}`)
 		tmplStr = re.ReplaceAllStringFunc(tmplStr, func(m string) string {
 			match := re.FindStringSubmatch(m)
 			if len(match) < 2 {
 				return m
 			}
 			key := match[1]
-			if templateKeySupported(key) {
-				return "{{." + key + "}}"
+			if templatePathReserved(key) {
+				return m
 			}
-			return m
+			return "{{." + key + "}}"
 		})
 
-		tmpl, err := template.New("msg").Parse(tmplStr)
+		tmpl, err := template.New("msg").Option("missingkey=error").Parse(tmplStr)
 		if err != nil {
-			log.Printf("[CronPlus] Template parse error: %v. Using default.", err)
-			return s.defaultMessage(data)
+			log.Printf("[CronPlus] Template parse error: %v. Skipping delivery.", err)
+			return ""
 		}
 		var buf strings.Builder
 		if err := tmpl.Execute(&buf, data); err != nil {
-			log.Printf("[CronPlus] Template exec error: %v. Using default.", err)
-			return s.defaultMessage(data)
+			log.Printf("[CronPlus] Template exec error: %v. Skipping delivery.", err)
+			return ""
 		}
 		return buf.String()
 	}
@@ -284,13 +289,22 @@ func (s *Service) buildMessage(
 	return s.defaultMessage(data)
 }
 
-func templateKeySupported(key string) bool {
-	switch key {
-	case "task", "status", "summary", "body", "exitcode", "duration", "stdout", "stderr",
-		"TaskName", "Status", "Summary", "Body", "ExitCode", "Duration", "Stdout", "Stderr":
+func setTemplateDefault(data map[string]any, key string, value any) {
+	if _, ok := data[key]; ok {
+		return
+	}
+	data[key] = value
+}
+
+func templatePathReserved(path string) bool {
+	switch path {
+	case "if", "else", "end", "range", "with", "define", "template", "block", "break", "continue",
+		"nil", "true", "false",
+		"and", "call", "html", "index", "slice", "js", "len", "not", "or", "print", "printf", "println",
+		"urlquery", "eq", "ne", "lt", "le", "gt", "ge":
 		return true
 	default:
-		return strings.HasPrefix(key, "data.") || strings.HasPrefix(key, "Data.")
+		return false
 	}
 }
 

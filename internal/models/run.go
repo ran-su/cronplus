@@ -1,6 +1,7 @@
 package models
 
 import (
+	"encoding/json"
 	"strings"
 	"time"
 )
@@ -59,10 +60,69 @@ type ActiveRunInfo struct {
 
 // ParsedResult is the structured data extracted from CRONPLUS_RESULT=<json>.
 type ParsedResult struct {
-	Status      string       `json:"status"`
-	Summary     string       `json:"summary"`
-	Deliverable *Deliverable `json:"deliverable,omitempty"`
-	Data        any          `json:"data,omitempty"`
+	Status      string         `json:"status"`
+	Summary     string         `json:"summary"`
+	Deliverable *Deliverable   `json:"deliverable,omitempty"`
+	Data        any            `json:"data,omitempty"`
+	Fields      map[string]any `json:"-"`
+}
+
+func (p *ParsedResult) UnmarshalJSON(b []byte) error {
+	var fields map[string]any
+	if err := json.Unmarshal(b, &fields); err != nil {
+		return err
+	}
+	var known struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(b, &known); err != nil {
+		return err
+	}
+	p.Status = known.Status
+	if summary, ok := fields["summary"].(string); ok {
+		p.Summary = summary
+	}
+	if deliverable, ok := decodeDeliverableField(fields["deliverable"]); ok {
+		p.Deliverable = deliverable
+	}
+	p.Data = fields["data"]
+	p.Fields = fields
+	return nil
+}
+
+func decodeDeliverableField(value any) (*Deliverable, bool) {
+	if value == nil {
+		return nil, false
+	}
+	b, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var deliverable Deliverable
+	if err := json.Unmarshal(b, &deliverable); err != nil {
+		return nil, false
+	}
+	return &deliverable, true
+}
+
+func (p ParsedResult) MarshalJSON() ([]byte, error) {
+	fields := make(map[string]any, len(p.Fields)+4)
+	for k, v := range p.Fields {
+		fields[k] = v
+	}
+	if p.Status != "" {
+		fields["status"] = p.Status
+	}
+	if p.Summary != "" {
+		fields["summary"] = p.Summary
+	}
+	if _, ok := fields["deliverable"]; !ok && p.Deliverable != nil {
+		fields["deliverable"] = p.Deliverable
+	}
+	if _, ok := fields["data"]; !ok && p.Data != nil {
+		fields["data"] = p.Data
+	}
+	return json.Marshal(fields)
 }
 
 // Deliverable is the structured payload for delivery channels.

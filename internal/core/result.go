@@ -43,13 +43,28 @@ func normalizeParsedResultStatus(result *models.ParsedResult) {
 	normalized := models.NormalizeRunStatus(original)
 	if models.IsValidRunStatus(normalized) {
 		result.Status = normalized
+		syncParsedResultField(result, "status", result.Status)
 		return
 	}
 
 	result.Status = "failure"
 	if result.Summary == "" {
 		result.Summary = fmt.Sprintf("Invalid structured result status: %s", original)
+		syncParsedResultField(result, "status", result.Status)
+		syncParsedResultField(result, "summary", result.Summary)
 		return
 	}
 	result.Summary = fmt.Sprintf("Invalid structured result status %q. %s", original, result.Summary)
+	syncParsedResultField(result, "status", result.Status)
+	syncParsedResultField(result, "summary", result.Summary)
+}
+
+func syncParsedResultField(result *models.ParsedResult, key string, value any) {
+	if result == nil {
+		return
+	}
+	if result.Fields == nil {
+		result.Fields = make(map[string]any)
+	}
+	result.Fields[key] = value
 }

@@ -148,6 +148,121 @@ func TestBuildMessage_DocumentedTemplateKeys(t *testing.T) {
 	}
 }
 
+func TestBuildMessage_ArbitraryResultTemplate(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	task.Manifest.Delivery.MessageTemplate = "{{payload.body}}"
+	run := makeRun(0, "success", "All good")
+	run.Outcome.ParsedResult.Fields = map[string]any{
+		"payload": map[string]any{"body": "deliver this body"},
+	}
+	svc.Deliver(task, run, profiles)
+
+	if len(mock.sentMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.sentMessages))
+	}
+	if got, want := mock.sentMessages[0], "deliver this body"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestBuildMessage_ShortTemplateUsesParsedResultJSON(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	task.Manifest.Delivery.MessageTemplate = "{{deliverable.body}}"
+	run := makeRun(0, "success", "All good")
+	run.Outcome.ParsedResult.Fields = map[string]any{
+		"deliverable": map[string]any{"body": "deliver this body"},
+	}
+	svc.Deliver(task, run, profiles)
+
+	if len(mock.sentMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.sentMessages))
+	}
+	if got, want := mock.sentMessages[0], "deliver this body"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestBuildMessage_DataTemplate(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	task.Manifest.Delivery.MessageTemplate = "Price: ${{data.price}}"
+	run := makeRun(0, "success", "All good")
+	run.Outcome.ParsedResult.Data = map[string]any{"price": 19.99}
+	svc.Deliver(task, run, profiles)
+
+	if len(mock.sentMessages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.sentMessages))
+	}
+	if got, want := mock.sentMessages[0], "Price: $19.99"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+}
+
+func TestDeliver_SkipsEmptyRenderedTemplate(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	task.Manifest.Delivery.MessageTemplate = "{{payload.body}}"
+	run := makeRun(0, "success", "All good")
+	run.Outcome.ParsedResult.Fields = map[string]any{
+		"payload": map[string]any{"body": ""},
+	}
+	results := svc.Deliver(task, run, profiles)
+
+	if len(results) != 0 {
+		t.Fatalf("expected no delivery results for empty rendered template, got %+v", results)
+	}
+	if len(mock.sentMessages) != 0 {
+		t.Fatalf("expected no messages, got %q", mock.sentMessages)
+	}
+}
+
+func TestDeliver_TemplateRenderErrorDoesNotSendDefaultMessage(t *testing.T) {
+	mock := &mockDriver{}
+	svc := NewService(mock)
+
+	profiles := []models.DeliveryProfile{
+		{ID: "p1", Name: "Test", DriverType: "mock", Enabled: true},
+	}
+
+	task := makeTask([]string{"p1"}, []string{"success"})
+	task.Manifest.Delivery.MessageTemplate = "{{data.price}}"
+	run := makeRun(0, "success", "All good")
+	results := svc.Deliver(task, run, profiles)
+
+	if len(results) != 0 {
+		t.Fatalf("expected no delivery results for template render error, got %+v", results)
+	}
+	if len(mock.sentMessages) != 0 {
+		t.Fatalf("expected no messages, got %q", mock.sentMessages)
+	}
+}
+
 func TestDeliver_ProfileNotFound(t *testing.T) {
 	mock := &mockDriver{}
 	svc := NewService(mock)

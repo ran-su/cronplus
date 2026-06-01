@@ -87,19 +87,13 @@ print("CRONPLUS_RESULT=" + json.dumps(result, separators=(",", ":")))
 
 CronPlus scans stdout for the last line beginning with the configured prefix. Invalid JSON is ignored. Unknown result statuses become `failure`.
 
-Use this result shape:
+Use `status` for CronPlus run state. Add any other JSON fields the task needs for UI/API output or delivery templates:
 
 ```python
 result = {
     "status": "success",
-    "summary": "Short human-readable summary",
-    "deliverable": {
-        "kind": "text",
-        "title": "Optional title",
-        "body": "Optional delivery body",
-        "format": "plain"
-    },
-    "data": {
+    "message": "Short human-readable message",
+    "details": {
         "count": 3
     }
 }
@@ -114,7 +108,7 @@ Status rules:
 - Use exit code `0` for `success`, `warning`, and intentional `skipped`.
 - Use non-zero exit code for true execution failures.
 
-Keep `summary` concise. Put detailed machine-readable values in `data`. Avoid putting huge payloads in the structured result.
+Keep fields concise enough for local storage and delivery. Avoid putting huge payloads in the structured result.
 
 ## Resource-Safe Script Requirements
 
@@ -153,23 +147,11 @@ delivery:
   profiles: [my-telegram]
   send_on: [failure, warning]
   message_template: |
-    [{{.TaskName}}] {{.Status}}
-    {{.Summary}}
+    {{message}}
+    Count: {{details.count}}
 ```
 
-Available template keys:
-
-| Key | Meaning |
-|---|---|
-| `.TaskName` / `.task` | Task display name |
-| `.Status` / `.status` | Canonical run status |
-| `.Summary` / `.summary` | Result summary |
-| `.Body` / `.body` | `deliverable.body` |
-| `.ExitCode` / `.exitcode` | Process exit code |
-| `.Duration` / `.duration` | Duration in seconds |
-| `.Stdout` / `.stdout` | First 500 bytes of stdout for delivery |
-| `.Stderr` / `.stderr` | First 500 bytes of stderr for delivery |
-| `.Data` / `.data` | Structured result data |
+The parsed result JSON object is the template root. If the script emits `{"message":"ok","details":{"count":3}}`, the manifest can use `{{message}}` and `{{details.count}}`. CronPlus sends only when the rendered template is not empty.
 
 Only use inline delivery profiles when the user explicitly wants the package to define them. Telegram config keys are `bot_token` and `chat_id`. Inbound commands are enabled only on daemon delivery profiles, not inline manifest profiles.
 

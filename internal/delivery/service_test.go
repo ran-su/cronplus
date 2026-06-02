@@ -75,8 +75,11 @@ func TestDeliver_MatchesSendOn(t *testing.T) {
 	mock.sentMessages = nil
 	run2 := makeRun(1, "failed", "error")
 	results2 := svc.Deliver(task, run2, profiles)
-	if len(results2) != 0 {
-		t.Errorf("expected no delivery for failed status, got %+v", results2)
+	if len(results2) != 1 || results2[0].Status != "skipped" {
+		t.Errorf("expected skipped delivery for failed status, got %+v", results2)
+	}
+	if len(mock.sentMessages) != 0 {
+		t.Fatalf("expected no messages, got %q", mock.sentMessages)
 	}
 }
 
@@ -234,8 +237,8 @@ func TestDeliver_SkipsEmptyRenderedTemplate(t *testing.T) {
 	}
 	results := svc.Deliver(task, run, profiles)
 
-	if len(results) != 0 {
-		t.Fatalf("expected no delivery results for empty rendered template, got %+v", results)
+	if len(results) != 1 || results[0].Status != "skipped" {
+		t.Fatalf("expected skipped delivery result for empty rendered template, got %+v", results)
 	}
 	if len(mock.sentMessages) != 0 {
 		t.Fatalf("expected no messages, got %q", mock.sentMessages)
@@ -255,8 +258,8 @@ func TestDeliver_TemplateRenderErrorDoesNotSendDefaultMessage(t *testing.T) {
 	run := makeRun(0, "success", "All good")
 	results := svc.Deliver(task, run, profiles)
 
-	if len(results) != 0 {
-		t.Fatalf("expected no delivery results for template render error, got %+v", results)
+	if len(results) != 1 || results[0].Status != "skipped" {
+		t.Fatalf("expected skipped delivery result for template render error, got %+v", results)
 	}
 	if len(mock.sentMessages) != 0 {
 		t.Fatalf("expected no messages, got %q", mock.sentMessages)

@@ -264,6 +264,9 @@ function connectSSE() {
 
 function navigate(hash) {
     const path = hash.replace('#', '') || '/';
+    if (path !== currentPage) {
+        closeRouteModals();
+    }
     currentPage = path;
 
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -279,6 +282,13 @@ function navigate(hash) {
 
 window.addEventListener('hashchange', () => navigate(window.location.hash));
 
+function closeRouteModals() {
+    ['import-modal', 'edit-profile-modal', 'preview-modal'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    });
+}
+
 document.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && document.getElementById('login-screen').style.display !== 'none') {
         attemptLogin();
@@ -292,6 +302,9 @@ document.addEventListener('click', (e) => {
 
     const id = button.dataset.profileId || '';
     switch (button.dataset.profileAction) {
+        case 'edit':
+            showEditProfileModal(id);
+            break;
         case 'toggle-commands':
             toggleProfileCommands(id, button.dataset.profileEnabled === 'true');
             break;
@@ -355,9 +368,8 @@ function updateCurrentPage(changes = {}) {
             return;
         }
     } else if (path === '/settings') {
-        const version = document.getElementById('settings-version');
-        if (version && changes.status) {
-            version.textContent = appState.status?.version || 'N/A';
+        if (changes.status) {
+            renderCurrentPage();
             return;
         }
     } else if (path.startsWith('/tasks/') && !path.includes('/runs/')) {
@@ -623,7 +635,8 @@ function renderRunDetail(path) {
 
     return `
         <div class="detail-header">
-            <a href="#/tasks/${taskID}" class="back-link">← ${esc(task?.name || 'Task')}</a>
+            <a href="#/tasks/${taskID}" class="back-link" aria-label="Back to task">←</a>
+            <span class="breadcrumb-label">${esc(task?.name || 'Task')}</span>
             <h1>Run Detail</h1>
         </div>
         <div id="run-detail-content">Loading...</div>
@@ -740,8 +753,16 @@ function renderDeliveryList() {
                 <div class="task-row" style="cursor:default">
                     <div class="task-info">
                         <div class="task-name">${esc(p.name)}</div>
-                        <div class="task-meta">ID: <span style="font-family:var(--font-mono)">${esc(p.id)}</span> · ${esc(p.driverType)} ${p.enabled ? '' : '· Disabled'} ${p.inboundCommandsEnabled ? '· Commands enabled' : ''}</div>
+                        <div class="task-meta">
+                            ID: <span style="font-family:var(--font-mono)">${esc(p.id)}</span>
+                            · ${esc(p.driverType)}
+                            ${p.configFields?.botToken ? '· Bot token set' : '· <span class="badge badge-warning">missing bot token</span>'}
+                            ${p.configFields?.chatID ? '· Chat ID set' : '· <span class="badge badge-warning">missing chat ID</span>'}
+                            ${p.enabled ? '' : '· Disabled'}
+                            ${p.inboundCommandsEnabled ? '· Commands enabled' : ''}
+                        </div>
                     </div>
+                    <button class="btn btn-sm" data-profile-action="edit" data-profile-id="${esc(p.id)}">Edit</button>
                     <button class="btn btn-sm" data-profile-action="toggle-commands" data-profile-id="${esc(p.id)}" data-profile-enabled="${!p.inboundCommandsEnabled}">${p.inboundCommandsEnabled ? 'Disable Commands' : 'Enable Commands'}</button>
                     <button class="btn btn-sm" data-profile-action="test" data-profile-id="${esc(p.id)}">Test</button>
                     <button class="btn btn-sm btn-danger" data-profile-action="delete" data-profile-id="${esc(p.id)}">Delete</button>
@@ -749,6 +770,60 @@ function renderDeliveryList() {
             `).join('')}</div>`
         }
     `;
+}
+
+function showEditProfileModal(id) {
+    const profile = appState.deliveries.find(p => p.id === id);
+    if (!profile) {
+        toast('Profile not found', 'error');
+        return;
+    }
+    const existing = document.getElementById('edit-profile-modal');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = 'edit-profile-modal';
+    div.dataset.profileId = id;
+    div.innerHTML = `
+        <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
+            <div class="modal">
+                <h2>Edit Telegram Profile</h2>
+                <div class="form-group">
+                    <label class="form-label">Profile Name</label>
+                    <input class="form-input" id="edit-profile-name" value="${esc(profile.name)}" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Profile ID</label>
+                    <input class="form-input" value="${esc(profile.id)}" disabled />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">New Bot Token</label>
+                    <input class="form-input" id="edit-profile-token" type="password" placeholder="${profile.configFields?.botToken ? 'Leave blank to keep existing token' : '123456:ABC-DEF...'}" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">New Chat ID</label>
+                    <input class="form-input" id="edit-profile-chat" placeholder="${profile.configFields?.chatID ? 'Leave blank to keep existing chat ID' : '-100123456789'}" />
+                </div>
+                <div class="form-group">
+                    <label class="form-label">Authorized Chat IDs</label>
+                    <textarea class="form-input" id="edit-profile-authorized" rows="3" placeholder="One chat ID per line">${esc((profile.authorizedChatIDs || []).join('\\n'))}</textarea>
+                </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="edit-profile-enabled" ${profile.enabled ? 'checked' : ''} />
+                    <span>Profile enabled</span>
+                </label>
+                <label class="checkbox-row" style="margin-top:10px">
+                    <input type="checkbox" id="edit-profile-commands" ${profile.inboundCommandsEnabled ? 'checked' : ''} />
+                    <span>Enable Telegram commands</span>
+                </label>
+                <div class="modal-actions">
+                    <button class="btn" onclick="document.getElementById('edit-profile-modal').remove()">Cancel</button>
+                    <button class="btn btn-primary" onclick="updateProfileFromModal()">Save</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(div);
+    document.getElementById('edit-profile-name').focus();
 }
 
 function showAddProfileModal() {
@@ -841,6 +916,46 @@ async function createProfile() {
     refreshAll();
 }
 
+function updateProfileFromModal() {
+    const modal = document.getElementById('edit-profile-modal');
+    if (!modal) return;
+    updateProfile(modal.dataset.profileId || '');
+}
+
+async function updateProfile(id) {
+    const name = document.getElementById('edit-profile-name').value.trim();
+    const botToken = document.getElementById('edit-profile-token').value.trim();
+    const chatID = document.getElementById('edit-profile-chat').value.trim();
+    const authorizedText = document.getElementById('edit-profile-authorized').value;
+    if (!name) {
+        toast('Profile name is required', 'error');
+        return;
+    }
+    const config = {};
+    if (botToken) config.bot_token = botToken;
+    if (chatID) config.chat_id = chatID;
+    const authorizedChatIDs = authorizedText
+        .split(/[\n,]+/)
+        .map(v => v.trim())
+        .filter(Boolean);
+    const profile = {
+        name,
+        driverType: 'telegram',
+        enabled: document.getElementById('edit-profile-enabled').checked,
+        inboundCommandsEnabled: document.getElementById('edit-profile-commands').checked,
+        authorizedChatIDs,
+        config
+    };
+    const result = await api('PUT', `/api/deliveries/${deliveryIDPath(id)}`, profile);
+    if (result?.error) {
+        toast(result.message || 'Profile could not be updated', 'error');
+        return;
+    }
+    document.getElementById('edit-profile-modal').remove();
+    toast('Profile updated', 'success');
+    refreshAll();
+}
+
 async function deleteProfile(id) {
     if (!confirm('Delete this delivery profile?')) return;
     const result = await api('DELETE', `/api/deliveries/${deliveryIDPath(id)}`);
@@ -919,6 +1034,7 @@ async function clearCommands() {
 // ===== Settings =====
 
 function renderSettings() {
+    const server = appState.status?.server || {};
     return `
         <div class="page-header">
             <h1>Settings</h1>
@@ -936,6 +1052,14 @@ function renderSettings() {
         <div class="detail-card" style="max-width:500px;margin-top:16px">
             <h3>Version</h3>
             <p id="settings-version">${appState.status?.version || 'N/A'}</p>
+        </div>
+        <div class="detail-card" style="max-width:720px;margin-top:16px">
+            <h3>Daemon</h3>
+            <div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div>
+            <div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div>
+            <div class="manifest-row"><span class="label">State File</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
+            <div class="manifest-row"><span class="label">Token File</span><span class="value">${esc(server.tokenPath || '~/.config/cronplus/auth-token')}</span></div>
+            <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
         </div>
     `;
 }

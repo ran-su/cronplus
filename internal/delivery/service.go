@@ -45,6 +45,7 @@ func (s *Service) Deliver(
 	if len(delivery.Profiles) == 0 {
 		return nil
 	}
+	profileLookup := newProfileLookup(profiles)
 
 	status := models.RunStatusFromOutcome(record.Outcome)
 
@@ -57,17 +58,19 @@ func (s *Service) Deliver(
 		}
 	}
 	if !shouldSend {
-		return nil
+		return skippedDeliveryResults(delivery.Profiles, profileLookup, fmt.Sprintf("status %s is not configured in send_on", status))
 	}
 
 	// Build the message
-	message := s.buildMessage(task, record, status, delivery.MessageTemplate)
+	message, err := s.buildMessage(task, record, status, delivery.MessageTemplate)
+	if err != nil {
+		log.Printf("[CronPlus] Delivery skipped for %s — %v.", task.DisplayName, err)
+		return skippedDeliveryResults(delivery.Profiles, profileLookup, err.Error())
+	}
 	if strings.TrimSpace(message) == "" {
 		log.Printf("[CronPlus] Delivery skipped for %s — empty message.", task.DisplayName)
-		return nil
+		return skippedDeliveryResults(delivery.Profiles, profileLookup, "message template rendered empty")
 	}
-
-	profileLookup := newProfileLookup(profiles)
 
 	// Send to each profile
 	var results []models.DeliveryResult
@@ -190,13 +193,31 @@ func (p profileLookup) get(profileID string) (models.DeliveryProfile, bool) {
 	return profile, ok
 }
 
+func skippedDeliveryResults(profileIDs []string, lookup profileLookup, reason string) []models.DeliveryResult {
+	results := make([]models.DeliveryResult, 0, len(profileIDs))
+	for _, profileID := range profileIDs {
+		result := models.DeliveryResult{
+			ProfileID:   profileID,
+			ProfileName: profileID,
+			Status:      "skipped",
+			Error:       reason,
+		}
+		if profile, ok := lookup.get(profileID); ok {
+			result.ProfileID = profile.ID
+			result.ProfileName = profile.Name
+		}
+		results = append(results, result)
+	}
+	return results
+}
+
 // PreviewMessage renders the message that would be sent for a run without sending it.
 func (s *Service) PreviewMessage(task *models.Task, record *models.RunRecord) (string, error) {
 	if task.Manifest == nil {
 		return "", fmt.Errorf("task has no manifest")
 	}
 	status := models.RunStatusFromOutcome(record.Outcome)
-	return s.buildMessage(task, record, status, task.Manifest.Delivery.MessageTemplate), nil
+	return s.buildMessage(task, record, status, task.Manifest.Delivery.MessageTemplate)
 }
 
 // SendTest sends a small test message through a delivery profile.
@@ -219,7 +240,7 @@ func (s *Service) buildMessage(
 	record *models.RunRecord,
 	status string,
 	tmplStr string,
-) string {
+) (string, error) {
 	summary := ""
 	body := ""
 	var dataObj any
@@ -275,18 +296,16 @@ func (s *Service) buildMessage(
 
 		tmpl, err := template.New("msg").Option("missingkey=error").Parse(tmplStr)
 		if err != nil {
-			log.Printf("[CronPlus] Template parse error: %v. Skipping delivery.", err)
-			return ""
+			return "", fmt.Errorf("message template parse error: %w", err)
 		}
 		var buf strings.Builder
 		if err := tmpl.Execute(&buf, data); err != nil {
-			log.Printf("[CronPlus] Template exec error: %v. Skipping delivery.", err)
-			return ""
+			return "", fmt.Errorf("message template render error: %w", err)
 		}
-		return buf.String()
+		return buf.String(), nil
 	}
 
-	return s.defaultMessage(data)
+	return s.defaultMessage(data), nil
 }
 
 func setTemplateDefault(data map[string]any, key string, value any) {

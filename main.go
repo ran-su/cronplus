@@ -79,6 +79,7 @@ func main() {
 	// Initialize store and engine
 	s := store.New(statePath)
 	engine := core.NewEngine(s, deliverySvc)
+	engine.SetSettings(store.Settings{WebServerPort: listenPort, WebServerBind: "127.0.0.1"})
 	if envMaxRuns := os.Getenv("CRONPLUS_MAX_CONCURRENT_RUNS"); envMaxRuns != "" {
 		var maxRuns int
 		if _, err := fmt.Sscanf(envMaxRuns, "%d", &maxRuns); err == nil && maxRuns > 0 {
@@ -86,16 +87,19 @@ func main() {
 		}
 	}
 
-	// Restore persisted state
-	if err := engine.RestoreState(); err != nil {
-		log.Printf("[CronPlus] Warning: failed to restore state: %v", err)
-	}
-
 	// Start scheduler
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	scheduler := core.NewScheduler(engine)
+	engine.SetScheduler(scheduler)
+
+	// Restore persisted state
+	if err := engine.RestoreState(); err != nil {
+		log.Printf("[CronPlus] Warning: failed to restore state: %v", err)
+	}
+	engine.SetSettings(store.Settings{WebServerPort: listenPort, WebServerBind: "127.0.0.1"})
+
 	go scheduler.Start(ctx)
 
 	// Initialize inbound command system
@@ -129,7 +133,14 @@ func main() {
 
 	// Start HTTP server
 	addr := fmt.Sprintf("127.0.0.1:%d", listenPort)
-	server := api.NewServer(engine, token, addr, version)
+	server := api.NewServerWithInfo(engine, token, addr, api.ServerInfo{
+		Version:           version,
+		Addr:              addr,
+		ConfigDir:         configDir,
+		TokenPath:         tokenPath,
+		StatePath:         statePath,
+		MaxConcurrentRuns: engine.MaxConcurrentRuns(),
+	})
 	httpServer := server.Build(http.FS(webFS))
 
 	// Handle graceful shutdown

@@ -14,7 +14,18 @@ import (
 
 // Routes registers all API endpoints.
 func Routes(mux *http.ServeMux, engine *core.Engine, version string) {
-	mux.HandleFunc("GET /api/status", handleGetStatus(engine, version))
+	RoutesWithInfo(mux, engine, ServerInfo{Version: version})
+}
+
+// RoutesWithInfo registers all API endpoints with daemon metadata.
+func RoutesWithInfo(mux *http.ServeMux, engine *core.Engine, info ServerInfo) {
+	if info.Version == "" {
+		info.Version = "dev"
+	}
+	if info.MaxConcurrentRuns == 0 {
+		info.MaxConcurrentRuns = engine.MaxConcurrentRuns()
+	}
+	mux.HandleFunc("GET /api/status", handleGetStatus(engine, info))
 	mux.HandleFunc("GET /api/tasks", handleGetTasks(engine))
 	mux.HandleFunc("GET /api/tasks/{id}", handleGetTask(engine))
 	mux.HandleFunc("POST /api/tasks/import", handleImportTask(engine))
@@ -40,7 +51,7 @@ func Routes(mux *http.ServeMux, engine *core.Engine, version string) {
 
 // --- Status ---
 
-func handleGetStatus(engine *core.Engine, version string) http.HandlerFunc {
+func handleGetStatus(engine *core.Engine, info ServerInfo) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		tasks := engine.Tasks()
 		enabled := 0
@@ -75,7 +86,8 @@ func handleGetStatus(engine *core.Engine, version string) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
-			"version": version,
+			"version": info.Version,
+			"server":  info,
 			"tasks": map[string]int{
 				"total":    len(tasks),
 				"enabled":  enabled,
@@ -336,6 +348,11 @@ func handleGetDeliveries(engine *core.Engine) http.HandlerFunc {
 				"enabled":                p.Enabled,
 				"inboundCommandsEnabled": p.InboundCommandsEnabled,
 				"hasConfig":              len(p.Config) > 0,
+				"configFields": map[string]bool{
+					"botToken": p.Config["bot_token"] != "",
+					"chatID":   p.Config["chat_id"] != "",
+				},
+				"authorizedChatIDs": append([]string(nil), p.AuthorizedChatIDs...),
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"profiles": safe})
@@ -490,14 +507,22 @@ func readJSON(r *http.Request, v any) error {
 	return json.Unmarshal(body, v)
 }
 
-// CORSMiddleware adds CORS headers to all responses.
-func CORSMiddleware(next http.Handler) http.Handler {
+// CORSMiddleware adds CORS headers to trusted UI origins only.
+func CORSMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		origin := r.Header.Get("Origin")
+		if originAllowed(origin, allowedOrigins) {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+		}
 
 		if r.Method == http.MethodOptions {
+			if origin != "" && !originAllowed(origin, allowedOrigins) {
+				http.Error(w, `{"error":"forbidden","message":"Origin is not allowed."}`, http.StatusForbidden)
+				return
+			}
 			w.Header().Set("Access-Control-Max-Age", "86400")
 			w.WriteHeader(http.StatusOK)
 			return

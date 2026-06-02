@@ -533,6 +533,13 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     color: white; 
     background: rgba(255,255,255,0.1);
 }
+.breadcrumb-label {
+    color: var(--text-secondary);
+    font-size: 14px;
+    font-weight: 500;
+    max-width: 280px;
+    overflow-wrap: anywhere;
+}
 
 .task-content-layout {
     display: grid;

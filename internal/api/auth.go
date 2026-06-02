@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,7 +54,7 @@ func generateToken(bytes int) (string, error) {
 
 // AuthMiddleware returns middleware that checks Bearer token authentication.
 // Static asset paths and the auth/check endpoint are excluded.
-func AuthMiddleware(token string, next http.Handler) http.Handler {
+func AuthMiddleware(token string, allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.Path
 
@@ -65,7 +66,7 @@ func AuthMiddleware(token string, next http.Handler) http.Handler {
 
 		// Auth check endpoint: no auth required (localhost-only)
 		if path == "/api/auth/check" {
-			handleAuthCheck(w, r, token)
+			handleAuthCheck(w, r, token, allowedOrigins)
 			return
 		}
 
@@ -78,8 +79,8 @@ func AuthMiddleware(token string, next http.Handler) http.Handler {
 			}
 		}
 
-		// Check token in query param (for SSE EventSource which can't set headers)
-		if qToken := r.URL.Query().Get("token"); qToken == token {
+		// Check token in query param only for SSE EventSource, which can't set headers.
+		if path == "/api/events" && r.URL.Query().Get("token") == token {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -94,21 +95,46 @@ func AuthMiddleware(token string, next http.Handler) http.Handler {
 }
 
 // handleAuthCheck returns the token for localhost connections only.
-func handleAuthCheck(w http.ResponseWriter, r *http.Request, token string) {
-	remoteAddr := r.RemoteAddr
-	// Extract IP from addr:port
-	host := remoteAddr
-	if idx := strings.LastIndex(remoteAddr, ":"); idx >= 0 {
-		host = remoteAddr[:idx]
-	}
-	// Strip brackets from IPv6
-	host = strings.Trim(host, "[]")
-
-	if host == "127.0.0.1" || host == "::1" || host == "localhost" {
-		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprintf(w, `{"token":"%s"}`, token)
+func handleAuthCheck(w http.ResponseWriter, r *http.Request, token string, allowedOrigins []string) {
+	if !isLoopbackRemote(r.RemoteAddr) {
+		http.Error(w, `{"error":"forbidden","message":"Auth check is only available from localhost."}`, http.StatusForbidden)
 		return
 	}
 
-	http.Error(w, `{"error":"forbidden","message":"Auth check is only available from localhost."}`, http.StatusForbidden)
+	// Cross-origin pages can also connect to 127.0.0.1, so localhost alone is
+	// not a sufficient browser security boundary. Same-origin UI requests do
+	// not send Origin; CORS requests do.
+	if origin := r.Header.Get("Origin"); origin != "" && !originAllowed(origin, allowedOrigins) {
+		http.Error(w, `{"error":"forbidden","message":"Auth check is only available to the CronPlus UI origin."}`, http.StatusForbidden)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	fmt.Fprintf(w, `{"token":"%s"}`, token)
+}
+
+func isLoopbackRemote(remoteAddr string) bool {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	host = strings.Trim(host, "[]")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+func originAllowed(origin string, allowedOrigins []string) bool {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return false
+	}
+	for _, allowed := range allowedOrigins {
+		if origin == allowed {
+			return true
+		}
+	}
+	return false
 }

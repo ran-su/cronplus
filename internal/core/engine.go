@@ -33,6 +33,7 @@ type Engine struct {
 	scheduler       *Scheduler
 	Broker          *EventBroker
 	DeliveryService *delivery.Service
+	settings        store.Settings
 
 	maxRunsPerTask    int
 	maxConcurrentRuns int
@@ -51,9 +52,28 @@ func NewEngine(s *store.Store, deliverySvc *delivery.Service) *Engine {
 		store:             s,
 		Broker:            NewEventBroker(),
 		DeliveryService:   deliverySvc,
+		settings:          store.Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
 		maxRunsPerTask:    50,
 		maxConcurrentRuns: 2,
 	}
+}
+
+func (e *Engine) SetScheduler(scheduler *Scheduler) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.scheduler = scheduler
+}
+
+func (e *Engine) SetSettings(settings store.Settings) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if settings.WebServerPort <= 0 {
+		settings.WebServerPort = 9876
+	}
+	if settings.WebServerBind == "" {
+		settings.WebServerBind = "127.0.0.1"
+	}
+	e.settings = settings
 }
 
 func (e *Engine) SetMaxConcurrentRuns(n int) {
@@ -63,6 +83,12 @@ func (e *Engine) SetMaxConcurrentRuns(n int) {
 		n = 1
 	}
 	e.maxConcurrentRuns = n
+}
+
+func (e *Engine) MaxConcurrentRuns() int {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.maxConcurrentRuns
 }
 
 // RestoreState loads persisted state and re-imports task manifests.
@@ -76,6 +102,15 @@ func (e *Engine) RestoreState() error {
 	e.deliveryProfiles = cloneDeliveryProfiles(state.DeliveryProfiles)
 	e.runHistory = cloneRunHistoryMap(state.RunHistory)
 	e.commandLog = append([]models.CommandRecord(nil), state.CommandLog...)
+	if state.Settings.WebServerPort > 0 || state.Settings.WebServerBind != "" {
+		if state.Settings.WebServerPort <= 0 {
+			state.Settings.WebServerPort = 9876
+		}
+		if state.Settings.WebServerBind == "" {
+			state.Settings.WebServerBind = "127.0.0.1"
+		}
+		e.settings = state.Settings
+	}
 	e.mu.Unlock()
 	hadPersistedActiveRuns := len(state.ActiveRuns) > 0
 	e.cleanupPersistedActiveRuns(state.ActiveRuns)
@@ -123,7 +158,7 @@ func (e *Engine) PersistState() error {
 		RunHistory:       cloneRunHistoryMap(e.runHistory),
 		ActiveRuns:       activeRuns,
 		CommandLog:       append([]models.CommandRecord(nil), e.commandLog...),
-		Settings:         store.Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
+		Settings:         e.settings,
 	}
 
 	return e.store.Save(state)
@@ -222,6 +257,9 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 				e.taskGenerations[e.tasks[i].ID] = 1
 			}
 			taskCopy := cloneTask(e.tasks[i])
+			if e.scheduler != nil {
+				e.scheduler.PrimeTask(taskCopy, time.Now())
+			}
 			e.Broker.Publish("task_updated", taskCopy)
 			return taskCopy, nil
 		}
@@ -250,6 +288,9 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 		e.taskGenerations[id] = 1
 	}
 	taskCopy := cloneTask(task)
+	if e.scheduler != nil {
+		e.scheduler.PrimeTask(taskCopy, time.Now())
+	}
 	e.Broker.Publish("task_updated", taskCopy)
 	return taskCopy, nil
 }
@@ -289,15 +330,20 @@ func (e *Engine) RemoveTask(taskID string) error {
 // SetTaskEnabled enables or disables a task.
 func (e *Engine) SetTaskEnabled(taskID string, enabled bool) error {
 	e.mu.Lock()
-	defer e.mu.Unlock()
-
 	for _, t := range e.tasks {
 		if t.ID == taskID {
 			t.Enabled = enabled
-			e.Broker.Publish("task_updated", t)
+			taskCopy := cloneTask(t)
+			scheduler := e.scheduler
+			e.mu.Unlock()
+			if enabled && scheduler != nil {
+				scheduler.PrimeTask(taskCopy, time.Now())
+			}
+			e.Broker.Publish("task_updated", taskCopy)
 			return nil
 		}
 	}
+	e.mu.Unlock()
 	return fmt.Errorf("task not found: %s", taskID)
 }
 
@@ -666,6 +712,16 @@ func (e *Engine) UpdateDeliveryProfile(p models.DeliveryProfile) error {
 	e.mu.Lock()
 	for i, existing := range e.deliveryProfiles {
 		if existing.ID == p.ID {
+			if p.Name == "" {
+				p.Name = existing.Name
+			}
+			if p.DriverType == "" {
+				p.DriverType = existing.DriverType
+			}
+			p.Config = mergeDeliveryConfig(existing.Config, p.Config)
+			if p.AuthorizedChatIDs == nil {
+				p.AuthorizedChatIDs = append([]string(nil), existing.AuthorizedChatIDs...)
+			}
 			e.deliveryProfiles[i] = p
 			e.mu.Unlock()
 			e.notifyDeliveryProfilesChanged()
@@ -980,6 +1036,20 @@ func cloneDeliveryProfile(profile models.DeliveryProfile) models.DeliveryProfile
 	profile.Config = cloneStringMap(profile.Config)
 	profile.AuthorizedChatIDs = append([]string(nil), profile.AuthorizedChatIDs...)
 	return profile
+}
+
+func mergeDeliveryConfig(existing, updates map[string]string) map[string]string {
+	merged := cloneStringMap(existing)
+	if merged == nil {
+		merged = make(map[string]string)
+	}
+	for key, value := range updates {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
 }
 
 func cloneStringMap(in map[string]string) map[string]string {

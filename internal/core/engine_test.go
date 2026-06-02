@@ -285,6 +285,64 @@ func TestAddDeliveryProfileMakesExplicitDuplicateIDUnique(t *testing.T) {
 	}
 }
 
+func TestUpdateDeliveryProfilePreservesExistingSecrets(t *testing.T) {
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	id := engine.AddDeliveryProfile(models.DeliveryProfile{
+		ID:                     "telegram",
+		Name:                   "Old",
+		DriverType:             "telegram",
+		Enabled:                true,
+		InboundCommandsEnabled: true,
+		Config:                 map[string]string{"bot_token": "old-token", "chat_id": "old-chat"},
+		AuthorizedChatIDs:      []string{"1"},
+	})
+
+	if err := engine.UpdateDeliveryProfile(models.DeliveryProfile{
+		ID:                id,
+		Name:              "New",
+		DriverType:        "telegram",
+		Enabled:           false,
+		Config:            map[string]string{"chat_id": "new-chat"},
+		AuthorizedChatIDs: []string{"2"},
+	}); err != nil {
+		t.Fatalf("UpdateDeliveryProfile: %v", err)
+	}
+
+	profiles := engine.DeliveryProfiles()
+	if len(profiles) != 1 {
+		t.Fatalf("profiles len = %d, want 1", len(profiles))
+	}
+	got := profiles[0]
+	if got.Name != "New" || got.Enabled {
+		t.Fatalf("profile basic fields = %+v, want updated name and disabled", got)
+	}
+	if got.Config["bot_token"] != "old-token" || got.Config["chat_id"] != "new-chat" {
+		t.Fatalf("config = %+v, want preserved token and updated chat", got.Config)
+	}
+	if len(got.AuthorizedChatIDs) != 1 || got.AuthorizedChatIDs[0] != "2" {
+		t.Fatalf("authorized chat IDs = %+v, want [2]", got.AuthorizedChatIDs)
+	}
+}
+
+func TestAttachedSchedulerPrimesImportedTaskCurrentMinute(t *testing.T) {
+	dir := writeTaskPackage(t, "print('ok')\n", "")
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	scheduler := NewScheduler(engine)
+	engine.SetScheduler(scheduler)
+
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+
+	scheduler.mu.Lock()
+	got := scheduler.lastTriggered[task.ID]
+	scheduler.mu.Unlock()
+	if got == "" {
+		t.Fatal("scheduler did not prime imported task for the current matching minute")
+	}
+}
+
 func waitForActiveRunDetail(t *testing.T, engine *Engine, taskID string) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)

@@ -30,3 +30,41 @@ func TestExtractCommandNormalizesTelegramBotSuffix(t *testing.T) {
 		t.Fatalf("extractCommand = %q, want /run", got)
 	}
 }
+
+func TestRouteIncludesPresetOptions(t *testing.T) {
+	router := NewRouter(CommandContext{
+		GetTasks: func() []*models.Task {
+			return []*models.Task{
+				{DisplayName: "Daily Report"},
+			}
+		},
+		NextRunTime: func(task *models.Task) *time.Time {
+			return nil
+		},
+		GetRunHistory: func(taskID string) []models.RunRecord {
+			return nil
+		},
+	})
+
+	reply := router.Route(models.InboundMessage{RawText: "/help"})
+	if reply == nil {
+		t.Fatal("reply is nil")
+	}
+	if !presetContains(reply.PresetOptions, "/status") || !presetContains(reply.PresetOptions, "/list") {
+		t.Fatalf("preset options = %+v, want status and list buttons", reply.PresetOptions)
+	}
+	if !presetContains(reply.PresetOptions, "/run daily-report") || !presetContains(reply.PresetOptions, "/last daily-report") {
+		t.Fatalf("preset options = %+v, want task run/last buttons", reply.PresetOptions)
+	}
+}
+
+func presetContains(rows [][]string, want string) bool {
+	for _, row := range rows {
+		for _, got := range row {
+			if got == want {
+				return true
+			}
+		}
+	}
+	return false
+}

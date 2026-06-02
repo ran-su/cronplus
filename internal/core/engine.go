@@ -832,19 +832,19 @@ func (e *Engine) notifyDeliveryProfilesChanged() {
 
 // NextRunTime returns the next scheduled run time for a task.
 func (e *Engine) NextRunTime(task *models.Task) *time.Time {
-	if task.Manifest == nil {
+	runs := e.NextRunTimes(task, 1)
+	if len(runs) == 0 {
 		return nil
 	}
-	expr, err := ParseCron(task.Manifest.Schedule.Expression)
-	if err != nil {
+	return &runs[0]
+}
+
+// NextRunTimes returns the upcoming scheduled run times for a task.
+func (e *Engine) NextRunTimes(task *models.Task, count int) []time.Time {
+	if task == nil || task.Manifest == nil || !task.Enabled {
 		return nil
 	}
-	tz := task.Manifest.Schedule.Timezone
-	loc, err := time.LoadLocation(tz)
-	if err != nil {
-		loc = time.UTC
-	}
-	return expr.NextRun(time.Now(), loc)
+	return NextRunTimesForManifest(task.Manifest, count, time.Now())
 }
 
 func joinLines(lines []string) string {

@@ -47,26 +47,26 @@ func (r *Router) Route(msg models.InboundMessage) *models.OutboundReply {
 		return r.handleHelp()
 	case "/run":
 		if len(args) == 0 {
-			return reply("Usage: /run <task-slug>")
+			return r.reply("Usage: /run <task-slug>")
 		}
 		return r.handleRun(args[0])
 	case "/last":
 		if len(args) == 0 {
-			return reply("Usage: /last <task-slug>")
+			return r.reply("Usage: /last <task-slug>")
 		}
 		return r.handleLast(args[0])
 	case "/enable":
 		if len(args) == 0 {
-			return reply("Usage: /enable <task-slug>")
+			return r.reply("Usage: /enable <task-slug>")
 		}
 		return r.handleSetEnabled(args[0], true)
 	case "/disable":
 		if len(args) == 0 {
-			return reply("Usage: /disable <task-slug>")
+			return r.reply("Usage: /disable <task-slug>")
 		}
 		return r.handleSetEnabled(args[0], false)
 	default:
-		return reply(fmt.Sprintf("Unknown command: %s\nType /help for available commands.", command))
+		return r.reply(fmt.Sprintf("Unknown command: %s\nType /help for available commands.", command))
 	}
 }
 
@@ -111,13 +111,13 @@ func (r *Router) handleStatus() *models.OutboundReply {
 	}
 
 	msg += fmt.Sprintf("Recent failures: %d", recentFailures)
-	return reply(msg)
+	return r.reply(msg)
 }
 
 func (r *Router) handleList() *models.OutboundReply {
 	tasks := r.ctx.GetTasks()
 	if len(tasks) == 0 {
-		return reply("No tasks configured.")
+		return r.reply("No tasks configured.")
 	}
 
 	msg := "Tasks\n──────────\n"
@@ -143,7 +143,7 @@ func (r *Router) handleList() *models.OutboundReply {
 
 		msg += fmt.Sprintf("%s %s — %s%s\n", icon, t.Slug(), schedule, nextStr)
 	}
-	return reply(strings.TrimRight(msg, "\n"))
+	return r.reply(strings.TrimRight(msg, "\n"))
 }
 
 func (r *Router) handleHelp() *models.OutboundReply {
@@ -156,31 +156,31 @@ func (r *Router) handleHelp() *models.OutboundReply {
 /last <task> — Last run result
 /enable <task> — Enable a task
 /disable <task> — Disable a task`
-	return reply(msg)
+	return r.reply(msg)
 }
 
 func (r *Router) handleRun(slug string) *models.OutboundReply {
 	task := r.findTaskBySlug(slug)
 	if task == nil {
-		return reply(fmt.Sprintf("Task '%s' not found.\nUse /list to see available tasks.", slug))
+		return r.reply(fmt.Sprintf("Task '%s' not found.\nUse /list to see available tasks.", slug))
 	}
 
 	if err := r.ctx.TriggerRun(task.ID, "command"); err != nil {
-		return reply(fmt.Sprintf("❌ Failed to run %s: %s", task.DisplayName, err.Error()))
+		return r.reply(fmt.Sprintf("❌ Failed to run %s: %s", task.DisplayName, err.Error()))
 	}
 
-	return reply(fmt.Sprintf("✅ Started %s.\nUse /last %s for the latest result.", task.DisplayName, task.Slug()))
+	return r.reply(fmt.Sprintf("✅ Started %s.\nUse /last %s for the latest result.", task.DisplayName, task.Slug()))
 }
 
 func (r *Router) handleLast(slug string) *models.OutboundReply {
 	task := r.findTaskBySlug(slug)
 	if task == nil {
-		return reply(fmt.Sprintf("Task '%s' not found.", slug))
+		return r.reply(fmt.Sprintf("Task '%s' not found.", slug))
 	}
 
 	runs := r.ctx.GetRunHistory(task.ID)
 	if len(runs) == 0 {
-		return reply(fmt.Sprintf("No runs recorded for %s.", task.DisplayName))
+		return r.reply(fmt.Sprintf("No runs recorded for %s.", task.DisplayName))
 	}
 
 	last := runs[0]
@@ -200,17 +200,17 @@ func (r *Router) handleLast(slug string) *models.OutboundReply {
 		msg += "\n" + last.Outcome.ParsedResult.Summary
 	}
 
-	return reply(msg)
+	return r.reply(msg)
 }
 
 func (r *Router) handleSetEnabled(slug string, enabled bool) *models.OutboundReply {
 	task := r.findTaskBySlug(slug)
 	if task == nil {
-		return reply(fmt.Sprintf("Task '%s' not found.", slug))
+		return r.reply(fmt.Sprintf("Task '%s' not found.", slug))
 	}
 
 	if err := r.ctx.SetEnabled(task.ID, enabled); err != nil {
-		return reply(fmt.Sprintf("❌ Failed: %s", err.Error()))
+		return r.reply(fmt.Sprintf("❌ Failed: %s", err.Error()))
 	}
 
 	action := "enabled"
@@ -219,7 +219,7 @@ func (r *Router) handleSetEnabled(slug string, enabled bool) *models.OutboundRep
 		action = "disabled"
 		icon = "⏸"
 	}
-	return reply(fmt.Sprintf("%s %s %s.", icon, task.DisplayName, action))
+	return r.reply(fmt.Sprintf("%s %s %s.", icon, task.DisplayName, action))
 }
 
 func (r *Router) findTaskBySlug(slug string) *models.Task {
@@ -233,8 +233,40 @@ func (r *Router) findTaskBySlug(slug string) *models.Task {
 	return nil
 }
 
-func reply(text string) *models.OutboundReply {
-	return &models.OutboundReply{Text: text, Format: "plain"}
+const maxPresetTaskRows = 6
+
+func (r *Router) reply(text string) *models.OutboundReply {
+	return &models.OutboundReply{
+		Text:          text,
+		Format:        "plain",
+		PresetOptions: r.presetOptions(),
+	}
+}
+
+func (r *Router) presetOptions() [][]string {
+	rows := [][]string{
+		{"/status", "/list"},
+		{"/help"},
+	}
+	if r.ctx.GetTasks == nil {
+		return rows
+	}
+	added := 0
+	for _, task := range r.ctx.GetTasks() {
+		if task == nil {
+			continue
+		}
+		slug := task.Slug()
+		if slug == "" {
+			continue
+		}
+		rows = append(rows, []string{"/run " + slug, "/last " + slug})
+		added++
+		if added >= maxPresetTaskRows {
+			break
+		}
+	}
+	return rows
 }
 
 func normalizeCommand(token string) string {

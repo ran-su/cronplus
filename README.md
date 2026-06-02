@@ -213,6 +213,8 @@ curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
 
 Enable inbound commands on a Telegram delivery profile, then send:
 
+CronPlus also configures Telegram's command menu and sends a persistent reply keyboard with common actions. The keyboard includes `/status`, `/list`, `/help`, and run/last shortcuts for the first few imported tasks.
+
 | Command | Description |
 |---|---|
 | `/status` | App health summary |

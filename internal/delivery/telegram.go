@@ -14,17 +14,21 @@ import (
 
 // TelegramDriver sends messages via the Telegram Bot API.
 type TelegramDriver struct {
-	client *http.Client
+	client  *http.Client
+	apiBase string
 }
 
 // NewTelegramDriver creates a new Telegram delivery driver.
 func NewTelegramDriver() *TelegramDriver {
 	return &TelegramDriver{
-		client: &http.Client{Timeout: 15 * time.Second},
+		client:  &http.Client{Timeout: 15 * time.Second},
+		apiBase: telegramAPIBaseURL,
 	}
 }
 
 func (t *TelegramDriver) Type() string { return "telegram" }
+
+const telegramAPIBaseURL = "https://api.telegram.org"
 
 // Send sends a message to the configured Telegram chat.
 func (t *TelegramDriver) Send(profile models.DeliveryProfile, message string) error {
@@ -35,44 +39,94 @@ func (t *TelegramDriver) Send(profile models.DeliveryProfile, message string) er
 		return fmt.Errorf("telegram profile %s is missing bot_token or chat_id", profile.Name)
 	}
 
-	return t.sendMessage(botToken, chatID, message)
+	return t.sendMessage(botToken, chatID, message, nil)
 }
 
 // SendReply sends a reply message on the given chat (used by inbound commands).
 func (t *TelegramDriver) SendReply(botToken, chatID, message string) error {
-	return t.sendMessage(botToken, chatID, message)
+	return t.SendReplyWithOptions(botToken, chatID, models.OutboundReply{Text: message})
 }
 
-func (t *TelegramDriver) sendMessage(botToken, chatID, text string) error {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendMessage", botToken)
+// SendReplyWithOptions sends an inbound-command reply with optional Telegram UI presets.
+func (t *TelegramDriver) SendReplyWithOptions(botToken, chatID string, reply models.OutboundReply) error {
+	return t.sendMessage(botToken, chatID, reply.Text, reply.PresetOptions)
+}
+
+func (t *TelegramDriver) sendMessage(botToken, chatID, text string, presetOptions [][]string) error {
+	url := fmt.Sprintf("%s/bot%s/sendMessage", t.apiBase, botToken)
 
 	body := map[string]any{
 		"chat_id": chatID,
 		"text":    truncateTelegramMessage(text),
 	}
+	if keyboard := telegramReplyKeyboard(presetOptions); len(keyboard) > 0 {
+		body["reply_markup"] = map[string]any{
+			"keyboard":        keyboard,
+			"resize_keyboard": true,
+			"is_persistent":   true,
+		}
+	}
 
+	return t.postJSON(url, body, "telegram API")
+}
+
+// SetCommandMenu configures Telegram's slash-command picker for this bot token.
+func (t *TelegramDriver) SetCommandMenu(botToken string) error {
+	url := fmt.Sprintf("%s/bot%s/setMyCommands", t.apiBase, botToken)
+	body := map[string]any{
+		"commands": []map[string]string{
+			{"command": "status", "description": "App health summary"},
+			{"command": "list", "description": "List tasks"},
+			{"command": "help", "description": "Show command help"},
+			{"command": "run", "description": "Run a task by slug"},
+			{"command": "last", "description": "Show latest task result"},
+			{"command": "enable", "description": "Enable a task"},
+			{"command": "disable", "description": "Disable a task"},
+		},
+	}
+	return t.postJSON(url, body, "setMyCommands")
+}
+
+func (t *TelegramDriver) postJSON(url string, body map[string]any, description string) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Errorf("failed to marshal message: %w", err)
+		return fmt.Errorf("failed to marshal %s request: %w", description, err)
 	}
 
 	resp, err := t.client.Post(url, "application/json", bytes.NewReader(jsonBody))
 	if err != nil {
-		return fmt.Errorf("telegram API request failed: %w", err)
+		return fmt.Errorf("%s request failed: %w", description, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("telegram API returned %d: %s", resp.StatusCode, string(respBody))
+		return fmt.Errorf("%s returned %d: %s", description, resp.StatusCode, string(respBody))
 	}
 
 	return nil
 }
 
+func telegramReplyKeyboard(rows [][]string) [][]map[string]string {
+	keyboard := make([][]map[string]string, 0, len(rows))
+	for _, row := range rows {
+		buttonRow := make([]map[string]string, 0, len(row))
+		for _, text := range row {
+			if text == "" {
+				continue
+			}
+			buttonRow = append(buttonRow, map[string]string{"text": text})
+		}
+		if len(buttonRow) > 0 {
+			keyboard = append(keyboard, buttonRow)
+		}
+	}
+	return keyboard
+}
+
 // GetUpdates fetches new messages from the Telegram Bot API (for inbound commands).
 func (t *TelegramDriver) GetUpdates(ctx context.Context, botToken string, offset int64, timeoutSec int) ([]TelegramUpdate, error) {
-	url := fmt.Sprintf("https://api.telegram.org/bot%s/getUpdates?offset=%d&timeout=%d",
+	url := fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&timeout=%d", t.apiBase,
 		botToken, offset, timeoutSec)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

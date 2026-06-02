@@ -27,10 +27,12 @@ func RoutesWithInfo(mux *http.ServeMux, engine *core.Engine, info ServerInfo) {
 	}
 	mux.HandleFunc("GET /api/status", handleGetStatus(engine, info))
 	mux.HandleFunc("GET /api/tasks", handleGetTasks(engine))
+	mux.HandleFunc("POST /api/tasks/check", handleCheckTaskPackage(engine))
 	mux.HandleFunc("GET /api/tasks/{id}", handleGetTask(engine))
 	mux.HandleFunc("POST /api/tasks/import", handleImportTask(engine))
 	mux.HandleFunc("DELETE /api/tasks/{id}", handleDeleteTask(engine))
 	mux.HandleFunc("POST /api/tasks/{id}/reload", handleReloadTask(engine))
+	mux.HandleFunc("POST /api/tasks/{id}/check", handleCheckImportedTask(engine))
 	mux.HandleFunc("POST /api/tasks/{id}/run", handleRunTask(engine))
 	mux.HandleFunc("GET /api/tasks/{id}/delivery-preview", handleDeliveryPreview(engine))
 	mux.HandleFunc("POST /api/tasks/{id}/enable", handleSetTaskEnabled(engine, true))
@@ -95,6 +97,7 @@ func handleGetStatus(engine *core.Engine, info ServerInfo) http.HandlerFunc {
 			},
 			"nextRun":        nextRun,
 			"recentFailures": recentFailures,
+			"attentionItems": buildAttentionItems(engine, tasks),
 		})
 	}
 }
@@ -124,6 +127,7 @@ func handleGetTasks(engine *core.Engine) http.HandlerFunc {
 			if nr := engine.NextRunTime(t); nr != nil {
 				m["nextRun"] = nr.Format(time.RFC3339)
 			}
+			m["nextRuns"] = formatTimes(engine.NextRunTimes(t, 5))
 			if len(lastRun) > 0 {
 				lr := lastRun[0]
 				status := models.RunStatusFromOutcome(lr.Outcome)
@@ -131,6 +135,7 @@ func handleGetTasks(engine *core.Engine) http.HandlerFunc {
 					"status":     status,
 					"finishedAt": lr.FinishedAt.Format(time.RFC3339),
 				}
+				m["lastDiagnosis"] = core.DiagnoseRun(t, &lr)
 			}
 			result[i] = m
 		}
@@ -165,7 +170,21 @@ func handleGetTask(engine *core.Engine) http.HandlerFunc {
 		if nr := engine.NextRunTime(task); nr != nil {
 			m["nextRun"] = nr.Format(time.RFC3339)
 		}
+		m["nextRuns"] = formatTimes(engine.NextRunTimes(task, 5))
 		writeJSON(w, http.StatusOK, m)
+	}
+}
+
+func handleCheckTaskPackage(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Path string `json:"path"`
+		}
+		if err := readJSON(r, &body); err != nil || strings.TrimSpace(body.Path) == "" {
+			writeError(w, http.StatusBadRequest, "invalid_request", "Request body must include 'path'.")
+			return
+		}
+		writeJSON(w, http.StatusOK, core.CheckTaskPackage(body.Path))
 	}
 }
 
@@ -229,6 +248,18 @@ func handleReloadTask(engine *core.Engine) http.HandlerFunc {
 			"id":   task.ID,
 			"name": task.DisplayName,
 		})
+	}
+}
+
+func handleCheckImportedTask(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		task := engine.Task(id)
+		if task == nil {
+			writeError(w, http.StatusNotFound, "task_not_found", "No task with ID "+id)
+			return
+		}
+		writeJSON(w, http.StatusOK, core.CheckTaskPackage(task.PackageDir))
 	}
 }
 
@@ -329,7 +360,14 @@ func handleGetTaskRun(engine *core.Engine) http.HandlerFunc {
 			writeError(w, http.StatusNotFound, "run_not_found", "No run with ID "+runID)
 			return
 		}
-		writeJSON(w, http.StatusOK, run)
+		task := engine.Task(taskID)
+		writeJSON(w, http.StatusOK, struct {
+			models.RunRecord
+			Diagnosis core.RunDiagnosis `json:"diagnosis"`
+		}{
+			RunRecord: *run,
+			Diagnosis: core.DiagnoseRun(task, run),
+		})
 	}
 }
 
@@ -338,6 +376,7 @@ func handleGetTaskRun(engine *core.Engine) http.HandlerFunc {
 func handleGetDeliveries(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		profiles := engine.DeliveryProfiles()
+		tasks := engine.Tasks()
 		// Redact sensitive config values
 		safe := make([]map[string]any, len(profiles))
 		for i, p := range profiles {
@@ -353,6 +392,7 @@ func handleGetDeliveries(engine *core.Engine) http.HandlerFunc {
 					"chatID":   p.Config["chat_id"] != "",
 				},
 				"authorizedChatIDs": append([]string(nil), p.AuthorizedChatIDs...),
+				"usedByTasks":       deliveryProfileUsage(p, tasks),
 			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"profiles": safe})
@@ -478,6 +518,131 @@ func handleClearCommands(engine *core.Engine) http.HandlerFunc {
 }
 
 // --- Helpers ---
+
+func buildAttentionItems(engine *core.Engine, tasks []*models.Task) []map[string]any {
+	profiles := engine.DeliveryProfiles()
+	profileByID := make(map[string]models.DeliveryProfile, len(profiles))
+	profileByAlias := make(map[string]models.DeliveryProfile, len(profiles)*3)
+	for _, profile := range profiles {
+		profileByID[profile.ID] = profile
+		for _, alias := range []string{profile.Name, models.Slugify(profile.Name), strings.ToLower(profile.Name)} {
+			alias = strings.TrimSpace(alias)
+			if alias != "" {
+				profileByAlias[alias] = profile
+			}
+		}
+	}
+
+	var items []map[string]any
+	add := func(kind, severity string, task *models.Task, title, detail, action string) {
+		item := map[string]any{
+			"kind":     kind,
+			"severity": severity,
+			"title":    title,
+			"detail":   detail,
+			"action":   action,
+		}
+		if task != nil {
+			item["taskID"] = task.ID
+			item["taskName"] = task.DisplayName
+		}
+		items = append(items, item)
+	}
+
+	for _, task := range tasks {
+		status := engine.ManifestStatus(task)
+		if status.Error != "" {
+			add("manifest", "danger", task, "Manifest cannot be inspected", status.Error, "Open task")
+		} else if status.Changed {
+			add("manifest", "warning", task, "Manifest changed on disk", "Reload this task so CronPlus uses the current package files.", "Reload")
+		}
+
+		if task.Enabled && len(engine.NextRunTimes(task, 1)) == 0 {
+			add("schedule", "warning", task, "No upcoming scheduled run", "The schedule could not produce a next run time.", "Open task")
+		}
+
+		history := engine.RunHistory(task.ID)
+		if len(history) > 0 {
+			latest := history[0]
+			diagnosis := core.DiagnoseRun(task, &latest)
+			if diagnosis.Status == "failure" {
+				add("run", "danger", task, "Latest run failed", diagnosis.Summary, "Open run")
+				items[len(items)-1]["runID"] = latest.ID
+				if len(items) >= 8 {
+					return items
+				}
+			} else if diagnosis.Status == "warning" {
+				add("run", "warning", task, "Latest run needs review", diagnosis.Summary, "Open run")
+				items[len(items)-1]["runID"] = latest.ID
+			}
+		}
+
+		if task.Manifest == nil {
+			continue
+		}
+		for _, ref := range task.Manifest.Delivery.Profiles {
+			profile, ok := profileByID[ref]
+			if !ok {
+				profile, ok = profileByAlias[ref]
+			}
+			if !ok {
+				add("delivery", "danger", task, "Delivery profile not found", "Task references delivery profile "+ref+".", "Open task")
+				continue
+			}
+			if !profile.Enabled {
+				add("delivery", "warning", task, "Delivery profile disabled", profile.Name+" is disabled.", "Open delivery")
+			}
+			if profile.DriverType == "telegram" && (profile.Config["bot_token"] == "" || profile.Config["chat_id"] == "") {
+				add("delivery", "danger", task, "Telegram profile incomplete", profile.Name+" is missing a bot token or chat ID.", "Open delivery")
+			}
+		}
+		if len(items) >= 8 {
+			return items[:8]
+		}
+	}
+	return items
+}
+
+func deliveryProfileUsage(profile models.DeliveryProfile, tasks []*models.Task) []map[string]string {
+	var usedBy []map[string]string
+	for _, task := range tasks {
+		if task.Manifest == nil {
+			continue
+		}
+		for _, ref := range task.Manifest.Delivery.Profiles {
+			if deliveryProfileRefMatches(profile, ref) {
+				usedBy = append(usedBy, map[string]string{
+					"id":   task.ID,
+					"name": task.DisplayName,
+				})
+				break
+			}
+		}
+	}
+	return usedBy
+}
+
+func deliveryProfileRefMatches(profile models.DeliveryProfile, ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return false
+	}
+	if ref == profile.ID || ref == profile.Name || ref == models.Slugify(profile.Name) {
+		return true
+	}
+	return strings.EqualFold(ref, profile.Name)
+}
+
+func formatTimes(times []time.Time) []string {
+	if len(times) == 0 {
+		return nil
+	}
+	result := make([]string, len(times))
+	for i, t := range times {
+		result[i] = t.Format(time.RFC3339)
+	}
+	return result
+}
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")

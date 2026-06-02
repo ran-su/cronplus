@@ -1,10 +1,11 @@
 // CronPlus Web UI — Single Page Application
 
 const API_BASE = '';
+const OFFLINE_CACHE_KEY = 'cronplus_offline_cache_v1';
 let authToken = localStorage.getItem('cronplus_token') || '';
 let sseConnection = null;
 let currentPage = 'dashboard';
-let appState = { status: null, tasks: [], taskDetails: {}, taskDetailLoading: {}, taskDetailErrors: {}, deliveries: [], commands: [] };
+let appState = { status: null, tasks: [], taskDetails: {}, taskDetailLoading: {}, taskDetailErrors: {}, taskChecks: {}, runDetails: {}, runHistories: {}, deliveries: [], commands: [], connected: true };
 let appStateSignatures = { status: '', tasks: '', deliveries: '', commands: '' };
 let refreshInFlight = false;
 let refreshQueued = false;
@@ -72,6 +73,7 @@ async function attemptLogin() {
 function showApp() {
     document.getElementById('login-screen').style.display = 'none';
     document.getElementById('main-app').style.display = 'flex';
+    loadOfflineCache();
     connectSSE();
     navigate(window.location.hash || '#/');
     refreshAll();
@@ -109,9 +111,11 @@ async function api(method, path, body) {
         }
         return data;
     } catch (err) {
+        setConnectionState(false);
+        const rawMessage = err?.message || '';
         return {
             error: 'network_error',
-            message: err?.message || 'Could not reach CronPlus'
+            message: rawMessage === 'Failed to fetch' ? 'CronPlus daemon is not reachable.' : rawMessage || 'Could not reach CronPlus'
         };
     }
 }
@@ -159,6 +163,7 @@ async function performRefreshAll(options = {}) {
             appStateSignatures.status = sig;
             changed = true;
             changes.status = true;
+            saveOfflineCache();
         }
     }
     if (tasks && !tasks.error) {
@@ -166,11 +171,16 @@ async function performRefreshAll(options = {}) {
         const sig = stateSignature(nextTasks);
         if (sig !== appStateSignatures.tasks) {
             appState.tasks = nextTasks;
-            appState.taskDetails = {};
+            const taskIDs = new Set(nextTasks.map(t => t.id));
+            appState.taskDetails = Object.fromEntries(Object.entries(appState.taskDetails).filter(([id]) => taskIDs.has(id)));
+            appState.runHistories = Object.fromEntries(Object.entries(appState.runHistories).filter(([id]) => taskIDs.has(id)));
+            appState.runDetails = Object.fromEntries(Object.entries(appState.runDetails).filter(([, run]) => taskIDs.has(run?.taskID)));
             appState.taskDetailErrors = {};
+            appState.taskChecks = {};
             appStateSignatures.tasks = sig;
             changed = true;
             changes.tasks = true;
+            saveOfflineCache();
         }
     }
     if (deliveries && !deliveries.error) {
@@ -181,6 +191,7 @@ async function performRefreshAll(options = {}) {
             appStateSignatures.deliveries = sig;
             changed = true;
             changes.deliveries = true;
+            saveOfflineCache();
         }
     }
     if (commands && !commands.error) {
@@ -191,6 +202,7 @@ async function performRefreshAll(options = {}) {
             appStateSignatures.commands = sig;
             changed = true;
             changes.commands = true;
+            saveOfflineCache();
         }
     }
     if (changed && !hasActiveEditorState()) {
@@ -226,14 +238,12 @@ function connectSSE() {
     sseConnection.onopen = () => {
         if (sseConnection !== connection) return;
         sseRetryDelay = 1000;
-        document.querySelector('.status-dot').classList.remove('disconnected');
-        document.querySelector('.status-text').textContent = 'Connected';
+        setConnectionState(true);
     };
 
     sseConnection.onerror = () => {
         if (sseConnection !== connection) return;
-        document.querySelector('.status-dot').classList.add('disconnected');
-        document.querySelector('.status-text').textContent = 'Disconnected';
+        setConnectionState(false);
         connection.close();
         sseConnection = null;
         if (document.getElementById('main-app').style.display === 'none') return;
@@ -282,6 +292,14 @@ function navigate(hash) {
 
 window.addEventListener('hashchange', () => navigate(window.location.hash));
 
+function goToHash(hash) {
+    if (window.location.hash === hash) {
+        navigate(hash);
+        return;
+    }
+    window.location.hash = hash;
+}
+
 function closeRouteModals() {
     ['import-modal', 'edit-profile-modal', 'preview-modal'].forEach(id => {
         const el = document.getElementById(id);
@@ -297,6 +315,22 @@ document.addEventListener('keydown', (e) => {
 
 document.addEventListener('click', (e) => {
     if (!(e.target instanceof Element)) return;
+    const actionButton = e.target.closest('[data-action]');
+    if (actionButton) {
+        switch (actionButton.dataset.action) {
+            case 'retry-run-history':
+                loadRunHistory(actionButton.dataset.taskId || '');
+                break;
+            case 'retry-run-detail':
+                loadRunDetail(actionButton.dataset.taskId || '', actionButton.dataset.runId || '');
+                break;
+            case 'retry-refresh':
+                refreshAll({ forceRender: true });
+                break;
+        }
+        return;
+    }
+
     const button = e.target.closest('[data-profile-action]');
     if (!button) return;
 
@@ -418,6 +452,7 @@ function renderDashboardContent() {
                 <div class="stat-value ${(s.recentFailures||0) > 0 ? 'danger' : 'success'}">${s.recentFailures || 0}</div>
             </div>
         </div>
+        ${renderAttentionItems(s.attentionItems || [])}
         ${s.nextRun ? `
         <div class="stat-card" style="margin-bottom:24px">
             <div class="stat-label">Next Scheduled Run</div>
@@ -429,6 +464,51 @@ function renderDashboardContent() {
         <h2 style="font-size:18px;margin-bottom:16px">Recent Tasks</h2>
         ${renderTaskCards(appState.tasks.slice(0, 5))}
     `;
+}
+
+function renderAttentionItems(items) {
+    if (!items.length) {
+        return `
+            <div class="attention-panel attention-clear">
+                <div>
+                    <h2>Needs Attention</h2>
+                    <p>No failed runs, stale manifests, or broken delivery profiles are showing right now.</p>
+                </div>
+                <span class="badge badge-success">Clear</span>
+            </div>
+        `;
+    }
+
+    return `
+        <div class="attention-panel">
+            <div class="attention-header">
+                <div>
+                    <h2>Needs Attention</h2>
+                    <p>${items.length} item${items.length === 1 ? '' : 's'} need review.</p>
+                </div>
+            </div>
+            <div class="attention-list">
+                ${items.map(item => `
+                    <button class="attention-item" onclick="${attentionClickHandler(item)}">
+                        <span class="attention-severity ${esc(item.severity || 'warning')}"></span>
+                        <span class="attention-copy">
+                            <strong>${esc(item.title || 'Needs review')}</strong>
+                            <span>${item.taskName ? `${esc(item.taskName)} · ` : ''}${esc(item.detail || '')}</span>
+                        </span>
+                        <span class="attention-action">${esc(item.action || 'Open')}</span>
+                    </button>
+                `).join('')}
+            </div>
+        </div>
+    `;
+}
+
+function attentionClickHandler(item) {
+    let target = '#/tasks';
+    if (item.runID) target = `#/tasks/${item.taskID}/runs/${item.runID}`;
+    else if (item.kind === 'delivery') target = '#/delivery';
+    else if (item.taskID) target = `#/tasks/${item.taskID}`;
+    return `window.location.hash='${String(target).replace(/'/g, "\\'")}'`;
 }
 
 // ===== Tasks =====
@@ -496,12 +576,13 @@ function renderTaskDetail(path) {
 
     return `
         <div class="detail-header">
-            <a href="#/tasks" class="back-link">←</a>
+            <a href="#/tasks" class="back-link" onclick="goToHash('#/tasks');return false;">←</a>
             <h1>${esc(task.name)}</h1>
             <span class="badge badge-${task.enabled ? 'success' : 'muted'}">${task.enabled ? 'Enabled' : 'Disabled'}</span>
             ${task.manifestStatus?.changed ? '<span class="badge badge-warning">Manifest Changed</span>' : ''}
             <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
                 <button class="btn btn-primary" onclick="runTask('${id}')">▶ Run Now</button>
+                <button class="btn" onclick="checkImportedTask('${id}')">Check</button>
                 <button class="btn" onclick="reloadTask('${id}')">Reload Manifest</button>
                 <button class="btn" onclick="previewDelivery('${id}')">Preview Delivery</button>
                 <button class="btn" onclick="toggleTask('${id}', ${!task.enabled})">${task.enabled ? 'Disable' : 'Enable'}</button>
@@ -514,9 +595,12 @@ function renderTaskDetail(path) {
                     <h3>Description</h3>
                     <p style="font-size:15px;line-height:1.6;color:var(--text-primary)">${esc(task.description || 'No description provided.')}</p>
                 </div>
+                <div id="task-check-result-${id}">
+                    ${appState.taskChecks[id] ? renderTaskPackageCheck(appState.taskChecks[id]) : ''}
+                </div>
                 
                 <h2 style="font-size:18px;margin-bottom:16px;">Run History</h2>
-                <div id="run-history-${id}">Loading...</div>
+                <div id="run-history-${id}">${renderRunHistoryInitial(id)}</div>
             </div>
 
             <div class="task-sidebar">
@@ -524,6 +608,7 @@ function renderTaskDetail(path) {
                     <h3>Schedule</h3>
                     <div style="font-family:var(--font-mono);font-size:18px;color:var(--accent);margin-bottom:8px;font-weight:600;letter-spacing:1px">${esc(task.scheduleSummary || 'N/A')}</div>
                     ${task.nextRun ? `<p style="color:var(--text-secondary);font-size:13px;display:flex;align-items:center;gap:6px;"><span class="task-status-dot running"></span> Next: ${formatTime(task.nextRun)}</p>` : ''}
+                    ${renderNextRuns(task.nextRuns || [])}
                 </div>
 
                 <div class="detail-card">
@@ -576,13 +661,14 @@ async function loadTaskDetail(taskID, options = {}) {
     const data = await api('GET', `/api/tasks/${taskID}`);
     delete appState.taskDetailLoading[taskID];
     if (!data || data.error) {
-        delete appState.taskDetails[taskID];
+        const cached = appState.taskDetails[taskID] || appState.tasks.find(t => t.id === taskID);
         appState.taskDetailErrors[taskID] = data?.message || 'Task not found';
-        if (currentPage === `/tasks/${taskID}`) renderCurrentPage();
+        if (!cached && currentPage === `/tasks/${taskID}`) renderCurrentPage();
         return;
     }
     delete appState.taskDetailErrors[taskID];
     appState.taskDetails[taskID] = data;
+    saveOfflineCache();
     if (currentPage === `/tasks/${taskID}`) {
         renderCurrentPage();
     }
@@ -591,38 +677,81 @@ async function loadTaskDetail(taskID, options = {}) {
 async function loadRunHistory(taskID) {
     const data = await api('GET', `/api/tasks/${taskID}/runs`);
     const el = document.getElementById(`run-history-${taskID}`);
-    if (!el || !data) return;
+    if (!el) return;
+    if (!data) {
+        el.innerHTML = renderRunHistoryUnavailable(taskID, 'CronPlus could not load this task’s runs. Retry after the daemon reconnects.');
+        return;
+    }
     if (data.error) {
-        el.innerHTML = `<div class="delivery-error">${esc(data.message || 'Could not load run history')}</div>`;
+        el.innerHTML = renderRunHistoryUnavailable(taskID, data.message || 'Could not load run history.');
         return;
     }
 
     const runs = data.runs || [];
+    appState.runHistories[taskID] = runs;
+    saveOfflineCache();
     if (runs.length === 0) {
-        el.innerHTML = '<div class="empty-state"><div class="icon">📭</div><h3>No runs yet</h3></div>';
+        el.innerHTML = renderInlineState('No runs yet', 'This task has not recorded a run.', 'neutral');
         return;
     }
 
-    el.innerHTML = `<div class="run-history-list">
-        ${runs.map(r => {
-            const status = normalizeRunStatus(r.outcome?.parsedResult?.status || (r.outcome?.exitCode === 0 ? 'success' : 'failure'));
-            const delivery = deliveryHistorySummary(r.deliveryResults || []);
-            return `<a class="run-history-row" href="#/tasks/${r.taskID}/runs/${r.id}">
-                <div class="run-history-primary">
-                    <span class="run-history-status-group">
-                        <span class="badge badge-${runStatusBadge(status)}">${esc(runHistoryStatusLabel(status))}</span>
-                    </span>
-                    ${renderDeliveryHistorySummary(delivery)}
-                </div>
-                <div class="run-history-meta">
-                    <span><span class="run-history-label">Trigger</span>${esc(r.trigger)}</span>
-                    <span><span class="run-history-label">Started</span>${formatTime(r.startedAt)}</span>
-                    <span><span class="run-history-label">Duration</span>${r.outcome?.durationMs ? (r.outcome.durationMs / 1000).toFixed(1) + 's' : '—'}</span>
-                </div>
-                <span class="run-history-view">View</span>
-            </a>`;
-        }).join('')}
-    </div>`;
+    el.innerHTML = renderRunHistoryList(taskID, runs);
+}
+
+function renderRunHistoryInitial(taskID) {
+    const cached = appState.runHistories[taskID];
+    if (Array.isArray(cached) && cached.length > 0) {
+        return renderRunHistoryList(taskID, cached, {
+            notice: appState.connected ? '' : 'Showing cached run history while CronPlus is disconnected.'
+        });
+    }
+    if (Array.isArray(cached)) {
+        return renderInlineState('No runs yet', 'This task has not recorded a run.', 'neutral');
+    }
+    return renderInlineState('Loading run history', '', 'neutral');
+}
+
+function renderRunHistoryUnavailable(taskID, message) {
+    const cached = appState.runHistories[taskID];
+    if (Array.isArray(cached) && cached.length > 0) {
+        return renderRunHistoryList(taskID, cached, {
+            notice: message || 'Showing cached run history while CronPlus is disconnected.',
+            tone: 'warning'
+        });
+    }
+    return renderInlineState(
+        'Run history unavailable',
+        message || 'CronPlus could not load this task’s runs.',
+        'error',
+        'Retry',
+        `data-action="retry-run-history" data-task-id="${attr(taskID)}"`
+    );
+}
+
+function renderRunHistoryList(taskID, runs, options = {}) {
+    return `
+        ${options.notice ? renderInlineNotice(options.notice, options.tone || 'warning') : ''}
+        <div class="run-history-list">
+            ${runs.map(r => {
+                const status = runStatusFor(r);
+                const delivery = deliveryHistorySummary(r.deliveryResults || []);
+                return `<a class="run-history-row" href="#/tasks/${r.taskID || taskID}/runs/${r.id}">
+                    <div class="run-history-primary">
+                        <span class="run-history-status-group">
+                            <span class="badge badge-${runStatusBadge(status)}">${esc(runHistoryStatusLabel(status))}</span>
+                        </span>
+                        ${renderDeliveryHistorySummary(delivery)}
+                    </div>
+                    <div class="run-history-meta">
+                        <span><span class="run-history-label">Trigger</span>${esc(r.trigger)}</span>
+                        <span><span class="run-history-label">Started</span>${formatTime(r.startedAt)}</span>
+                        <span><span class="run-history-label">Duration</span>${r.outcome?.durationMs ? (r.outcome.durationMs / 1000).toFixed(1) + 's' : '—'}</span>
+                    </div>
+                    <span class="run-history-view">View</span>
+                </a>`;
+            }).join('')}
+        </div>
+    `;
 }
 
 // ===== Run Detail =====
@@ -635,7 +764,7 @@ function renderRunDetail(path) {
 
     return `
         <div class="detail-header">
-            <a href="#/tasks/${taskID}" class="back-link" aria-label="Back to task">←</a>
+            <a href="#/tasks/${taskID}" class="back-link" aria-label="Back to task" onclick="goToHash('#/tasks/${taskID}');return false;">←</a>
             <span class="breadcrumb-label">${esc(task?.name || 'Task')}</span>
             <h1>Run Detail</h1>
         </div>
@@ -648,11 +777,42 @@ async function loadRunDetail(taskID, runID) {
     const el = document.getElementById('run-detail-content');
     if (!el || !run) return;
     if (run.error) {
-        el.innerHTML = `<div class="empty-state"><h3>${esc(run.message || 'Run not found')}</h3></div>`;
+        const cached = cachedRunDetail(taskID, runID);
+        if (cached) {
+            appState.runDetails[runID] = cached;
+            el.innerHTML = renderRunDetailContent(cached, {
+                notice: run.message || 'Showing cached run details while CronPlus is disconnected.',
+                noticeTone: 'warning'
+            });
+            return;
+        }
+        el.innerHTML = renderInlineState(
+            'Run detail unavailable',
+            run.message || 'CronPlus could not load this run. Retry after the daemon reconnects.',
+            'error',
+            'Retry',
+            `data-action="retry-run-detail" data-task-id="${attr(taskID)}" data-run-id="${attr(runID)}"`
+        );
         return;
     }
+    appState.runDetails[runID] = run;
+    saveOfflineCache();
 
-    const status = normalizeRunStatus(run.outcome?.parsedResult?.status || (run.outcome?.exitCode === 0 ? 'success' : 'failure'));
+    el.innerHTML = renderRunDetailContent(run);
+}
+
+function cachedRunDetail(taskID, runID) {
+    const detail = appState.runDetails[runID];
+    if (detail && (!detail.taskID || detail.taskID === taskID)) {
+        return detail;
+    }
+    const history = appState.runHistories[taskID];
+    if (!Array.isArray(history)) return null;
+    return history.find(r => r.id === runID) || null;
+}
+
+function renderRunDetailContent(run, options = {}) {
+    const status = runStatusFor(run);
     const diagnostics = run.outcome?.diagnostics || {};
     const cleanup = diagnostics.cleanup || {};
 
@@ -672,7 +832,8 @@ async function loadRunDetail(taskID, runID) {
         </div>`;
     }
 
-    el.innerHTML = `
+    return `
+        ${options.notice ? renderInlineNotice(options.notice, options.noticeTone || 'warning') : ''}
         <div class="detail-grid">
             <div class="detail-card">
                 <h3>Status</h3>
@@ -691,6 +852,7 @@ async function loadRunDetail(taskID, runID) {
                 <p style="font-family:var(--font-mono)">${run.outcome?.exitCode ?? '—'}</p>
             </div>
         </div>
+        ${renderRunDiagnosis(run)}
         ${run.outcome?.diagnostics ? `
         <div class="detail-card" style="margin-bottom:16px">
             <h3>Run Diagnostics</h3>
@@ -760,7 +922,9 @@ function renderDeliveryList() {
                             ${p.configFields?.chatID ? '· Chat ID set' : '· <span class="badge badge-warning">missing chat ID</span>'}
                             ${p.enabled ? '' : '· Disabled'}
                             ${p.inboundCommandsEnabled ? '· Commands enabled' : ''}
+                            ${(p.usedByTasks || []).length ? `· Used by ${p.usedByTasks.length} task${p.usedByTasks.length === 1 ? '' : 's'}` : ''}
                         </div>
+                        ${renderDeliveryUsage(p)}
                     </div>
                     <button class="btn btn-sm" data-profile-action="edit" data-profile-id="${esc(p.id)}">Edit</button>
                     <button class="btn btn-sm" data-profile-action="toggle-commands" data-profile-id="${esc(p.id)}" data-profile-enabled="${!p.inboundCommandsEnabled}">${p.inboundCommandsEnabled ? 'Disable Commands' : 'Enable Commands'}</button>
@@ -802,6 +966,7 @@ function showEditProfileModal(id) {
                 <div class="form-group">
                     <label class="form-label">New Chat ID</label>
                     <input class="form-input" id="edit-profile-chat" placeholder="${profile.configFields?.chatID ? 'Leave blank to keep existing chat ID' : '-100123456789'}" />
+                    ${latestCommandChatID() ? '<button class="btn btn-sm inline-form-action" onclick="useLatestCommandChat(\'edit-profile-chat\')">Use latest command chat</button>' : ''}
                 </div>
                 <div class="form-group">
                     <label class="form-label">Authorized Chat IDs</label>
@@ -846,6 +1011,7 @@ function showAddProfileModal() {
                 <div class="form-group">
                     <label class="form-label">Chat ID</label>
                     <input class="form-input" id="new-profile-chat" placeholder="-100123456789" />
+                    ${latestCommandChatID() ? '<button class="btn btn-sm inline-form-action" onclick="useLatestCommandChat(\'new-profile-chat\')">Use latest command chat</button>' : ''}
                 </div>
                 <label class="checkbox-row">
                     <input type="checkbox" id="new-profile-commands" />
@@ -970,7 +1136,7 @@ async function deleteProfile(id) {
 async function testProfile(id) {
     const result = await api('POST', `/api/deliveries/${deliveryIDPath(id)}/test`, { message: 'CronPlus delivery test' });
     if (result?.error) {
-        toast(result.message || 'Delivery test failed', 'error');
+        toast(explainDeliveryError(result.message || 'Delivery test failed'), 'error');
         return;
     }
     toast('Test message sent', 'success');
@@ -985,6 +1151,49 @@ async function toggleProfileCommands(id, enabled) {
     }
     toast(enabled ? 'Commands enabled' : 'Commands disabled', 'success');
     refreshAll();
+}
+
+function renderDeliveryUsage(profile) {
+    const usedBy = profile.usedByTasks || [];
+    if (!usedBy.length) return '';
+    return `<div class="usage-list">
+        ${usedBy.slice(0, 4).map(task => `<a href="#/tasks/${esc(task.id)}" onclick="event.stopPropagation()">${esc(task.name)}</a>`).join('')}
+        ${usedBy.length > 4 ? `<span>${usedBy.length - 4} more</span>` : ''}
+    </div>`;
+}
+
+function latestCommandChatID() {
+    const command = appState.commands.find(c => c.chatID);
+    return command?.chatID || '';
+}
+
+function useLatestCommandChat(inputID) {
+    const input = document.getElementById(inputID);
+    const chatID = latestCommandChatID();
+    if (!input || !chatID) return;
+    input.value = chatID;
+    toast('Chat ID filled', 'success');
+}
+
+function explainDeliveryError(message) {
+    const text = String(message || '');
+    const lower = text.toLowerCase();
+    if (lower.includes('missing bot_token') || lower.includes('missing') && lower.includes('chat_id')) {
+        return 'Telegram profile is missing a bot token or chat ID.';
+    }
+    if (lower.includes('401') || lower.includes('unauthorized')) {
+        return 'Telegram rejected the bot token.';
+    }
+    if (lower.includes('400') && lower.includes('chat')) {
+        return 'Telegram could not find that chat ID.';
+    }
+    if (lower.includes('403') || lower.includes('blocked')) {
+        return 'Telegram cannot send to this chat. The bot may be blocked or not in the chat.';
+    }
+    if (lower.includes('request failed') || lower.includes('timeout')) {
+        return 'Telegram request failed. Check network access and try again.';
+    }
+    return text;
 }
 
 // ===== Commands =====
@@ -1098,6 +1307,24 @@ async function reloadTask(id) {
     refreshAll();
 }
 
+async function checkImportedTask(id) {
+    const target = document.getElementById(`task-check-result-${id}`);
+    if (target) {
+        target.innerHTML = '<div class="check-panel"><h3>Package Check</h3><p>Checking package...</p></div>';
+    }
+    const result = await api('POST', `/api/tasks/${id}/check`);
+    if (result?.error) {
+        if (target) target.innerHTML = `<div class="delivery-error">${esc(result.message || 'Package check failed')}</div>`;
+        toast(result.message || 'Package check failed', 'error');
+        return;
+    }
+    appState.taskChecks[id] = result;
+    if (target) {
+        target.innerHTML = renderTaskPackageCheck(result);
+    }
+    toast(checkToastMessage(result), result.status === 'failure' ? 'error' : 'success');
+}
+
 async function previewDelivery(id) {
     const result = await api('GET', `/api/tasks/${id}/delivery-preview`);
     if (result?.error) {
@@ -1166,8 +1393,10 @@ function promptImportTask() {
                     <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Full path to a directory containing a .cronplus.yaml manifest</p>
                 </div>
                 <div id="import-error" style="color:var(--danger);font-size:13px;display:none;margin-bottom:12px"></div>
+                <div id="import-check-result"></div>
                 <div class="modal-actions">
                     <button class="btn" onclick="document.getElementById('import-modal').remove()">Cancel</button>
+                    <button class="btn" onclick="checkImportPackage()">Check Package</button>
                     <button class="btn btn-primary" onclick="doImportTask()">Import</button>
                 </div>
             </div>
@@ -1178,6 +1407,23 @@ function promptImportTask() {
     document.getElementById('import-path-input').addEventListener('keydown', e => {
         if (e.key === 'Enter') doImportTask();
     });
+}
+
+async function checkImportPackage() {
+    const input = document.getElementById('import-path-input');
+    const resultEl = document.getElementById('import-check-result');
+    const path = input.value.trim();
+    if (!path) {
+        input.style.borderColor = 'var(--danger)';
+        return;
+    }
+    resultEl.innerHTML = '<div class="check-panel"><h3>Package Check</h3><p>Checking package...</p></div>';
+    const result = await api('POST', '/api/tasks/check', { path });
+    if (result?.error) {
+        resultEl.innerHTML = `<div class="delivery-error">${esc(result.message || 'Package check failed')}</div>`;
+        return;
+    }
+    resultEl.innerHTML = renderTaskPackageCheck(result);
 }
 
 async function doImportTask() {
@@ -1214,11 +1460,214 @@ async function importTask(path) {
 
 // ===== Helpers =====
 
+function setConnectionState(connected) {
+    appState.connected = connected;
+    const dot = document.querySelector('.status-dot');
+    const text = document.querySelector('.status-text');
+    if (!dot || !text) return;
+    dot.classList.toggle('disconnected', !connected);
+    text.textContent = connected ? 'Connected' : 'Disconnected';
+}
+
+function loadOfflineCache() {
+    try {
+        const cached = JSON.parse(localStorage.getItem(OFFLINE_CACHE_KEY) || '{}');
+        if (cached.status) appState.status = cached.status;
+        if (Array.isArray(cached.tasks)) appState.tasks = cached.tasks;
+        if (cached.taskDetails && typeof cached.taskDetails === 'object') appState.taskDetails = cached.taskDetails;
+        if (cached.runHistories && typeof cached.runHistories === 'object') appState.runHistories = cached.runHistories;
+        if (cached.runDetails && typeof cached.runDetails === 'object') appState.runDetails = cached.runDetails;
+        if (Array.isArray(cached.deliveries)) appState.deliveries = cached.deliveries;
+        appStateSignatures.status = stateSignature(appState.status);
+        appStateSignatures.tasks = stateSignature(appState.tasks);
+        appStateSignatures.deliveries = stateSignature(appState.deliveries);
+    } catch {
+        localStorage.removeItem(OFFLINE_CACHE_KEY);
+    }
+}
+
+function saveOfflineCache() {
+    try {
+        localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify({
+            status: appState.status,
+            tasks: appState.tasks,
+            taskDetails: appState.taskDetails,
+            runHistories: appState.runHistories,
+            runDetails: appState.runDetails,
+            deliveries: appState.deliveries,
+            savedAt: new Date().toISOString()
+        }));
+    } catch {
+        // Ignore quota or private-mode storage failures; live state still works.
+    }
+}
+
 function esc(s) {
     if (!s) return '';
     const div = document.createElement('div');
     div.textContent = String(s);
     return div.innerHTML;
+}
+
+function attr(s) {
+    return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;');
+}
+
+function renderInlineState(title, message, tone = 'neutral', actionLabel = '', actionAttrs = '') {
+    return `
+        <div class="inline-state inline-state-${esc(tone)}">
+            <div>
+                <h3>${esc(title)}</h3>
+                ${message ? `<p>${esc(message)}</p>` : ''}
+            </div>
+            ${actionLabel && actionAttrs ? `<button class="btn btn-sm" ${actionAttrs}>${esc(actionLabel)}</button>` : ''}
+        </div>
+    `;
+}
+
+function renderInlineNotice(message, tone = 'warning') {
+    if (!message) return '';
+    return `<div class="inline-notice inline-notice-${esc(tone)}">${esc(message)}</div>`;
+}
+
+function renderNextRuns(times) {
+    if (!Array.isArray(times) || times.length === 0) return '';
+    return `<div class="next-run-list">
+        ${times.map((time, index) => `
+            <div class="next-run-row">
+                <span>${index === 0 ? 'Next' : `#${index + 1}`}</span>
+                <strong>${formatTime(time)}</strong>
+            </div>
+        `).join('')}
+    </div>`;
+}
+
+function renderTaskPackageCheck(result) {
+    if (!result) return '';
+    const issues = result.issues || [];
+    const run = result.run;
+    return `
+        <div class="check-panel check-${esc(result.status || 'warning')}">
+            <div class="check-header">
+                <div>
+                    <h3>Package Check</h3>
+                    <p>${esc(result.summary || 'Check complete.')}</p>
+                </div>
+                <span class="badge badge-${statusBadgeClass(result.status)}">${esc(result.status || 'unknown')}</span>
+            </div>
+            <div class="check-grid">
+                <div class="check-step">
+                    <span>Manifest</span>
+                    <strong>${issues.some(i => i.severity === 'error') ? 'failed' : 'valid'}</strong>
+                </div>
+                <div class="check-step">
+                    <span>Environment</span>
+                    <strong>${esc(result.environment?.status || 'pending')}</strong>
+                </div>
+                <div class="check-step">
+                    <span>Run</span>
+                    <strong>${esc(run?.status || 'not run')}</strong>
+                </div>
+            </div>
+            ${result.name ? `<div class="manifest-row"><span class="label">Task</span><span class="value">${esc(result.name)}</span></div>` : ''}
+            ${result.manifestPath ? `<div class="manifest-row"><span class="label">Manifest</span><span class="value">${esc(result.manifestPath)}</span></div>` : ''}
+            ${renderNextRuns(result.nextRuns || [])}
+            ${issues.length ? `<div class="check-issues">
+                ${issues.map(issue => `
+                    <div class="check-issue ${esc(issue.severity)}">
+                        <span>${esc(issue.severity)}</span>
+                        <strong>${esc(issue.path)}</strong>
+                        <p>${esc(issue.message)}</p>
+                    </div>
+                `).join('')}
+            </div>` : ''}
+            ${result.environment?.status === 'failure' ? `<div class="delivery-error">${esc(result.environment.message)}</div>` : ''}
+            ${run ? renderRunDiagnosis({ id: `check-${Date.now()}`, diagnosis: run.diagnostics, outcome: { exitCode: run.exitCode, timedOut: run.timedOut, durationMs: run.durationMs } }, { compact: true }) : ''}
+            ${run?.stdoutTail ? `<h3 class="check-log-title">STDOUT</h3><div class="log-block check-log">${esc(run.stdoutTail)}</div>` : ''}
+            ${run?.stderrTail ? `<h3 class="check-log-title">STDERR</h3><div class="log-block check-log">${esc(run.stderrTail)}</div>` : ''}
+        </div>
+    `;
+}
+
+function renderRunDiagnosis(run, options = {}) {
+    const diagnosis = run.diagnosis || {};
+    if (!diagnosis.summary && !diagnosis.status) return '';
+    const causes = diagnosis.causes || [];
+    const actions = diagnosis.actions || [];
+    return `
+        <div class="detail-card diagnosis-card diagnosis-${esc(diagnosis.status || 'warning')}">
+            <div class="diagnosis-header">
+                <div>
+                    <h3>${options.compact ? 'Run Result' : 'What Happened'}</h3>
+                    <p>${esc(diagnosis.summary || 'Run finished.')}</p>
+                </div>
+                <span class="badge badge-${statusBadgeClass(diagnosis.status)}">${esc(diagnosis.status || 'unknown')}</span>
+            </div>
+            ${causes.length ? `<div class="diagnosis-list">
+                <span>Causes</span>
+                ${causes.map(cause => `<p>${esc(cause)}</p>`).join('')}
+            </div>` : ''}
+            ${actions.length ? `<div class="diagnosis-list">
+                <span>Next Actions</span>
+                ${actions.map(action => `<p>${esc(action)}</p>`).join('')}
+            </div>` : ''}
+            ${!options.compact ? `<button class="btn btn-sm" onclick="copyRunDiagnostics('${esc(run.id)}')">Copy Diagnostics</button>` : ''}
+        </div>
+    `;
+}
+
+function copyRunDiagnostics(runID) {
+    const run = appState.runDetails[runID];
+    if (!run) {
+        toast('Diagnostics not loaded', 'error');
+        return;
+    }
+    const text = [
+        `run_id=${run.id}`,
+        `task_id=${run.taskID}`,
+        `trigger=${run.trigger}`,
+        `status=${run.diagnosis?.status || runStatusFor(run)}`,
+        `summary=${run.diagnosis?.summary || ''}`,
+        `exit_code=${run.outcome?.exitCode}`,
+        `timed_out=${!!run.outcome?.timedOut}`,
+        `duration_ms=${run.outcome?.durationMs || 0}`,
+        `python=${run.outcome?.diagnostics?.pythonExecutable || ''}`,
+        `script=${run.outcome?.diagnostics?.scriptPath || ''}`,
+        `cwd=${run.outcome?.diagnostics?.workingDirectory || ''}`,
+        '',
+        'STDERR',
+        run.outcome?.stderr || ''
+    ].join('\n');
+    navigator.clipboard.writeText(text)
+        .then(() => toast('Diagnostics copied', 'success'))
+        .catch(() => toast('Copy failed', 'error'));
+}
+
+function statusBadgeClass(status) {
+    const normalized = normalizeRunStatus(status);
+    if (normalized === 'success') return 'success';
+    if (normalized === 'warning' || normalized === 'skipped') return 'warning';
+    if (normalized === 'unknown') return 'muted';
+    return 'danger';
+}
+
+function checkToastMessage(result) {
+    if (result?.status === 'success') return 'Package check passed';
+    if (result?.status === 'warning') return 'Package check passed with warnings';
+    return result?.summary || 'Package check failed';
+}
+
+function runStatusFor(run) {
+    const parsedStatus = run?.outcome?.parsedResult?.status;
+    if (parsedStatus) return normalizeRunStatus(parsedStatus);
+    const exitCode = run?.outcome?.exitCode;
+    if (exitCode === 0) return 'success';
+    if (exitCode !== undefined && exitCode !== null) return 'failure';
+    return normalizeRunStatus(run?.status || 'unknown');
 }
 
 function normalizeRunStatus(status) {
@@ -1237,6 +1686,7 @@ function runHistoryStatusLabel(status) {
     if (normalized === 'success') return 'run succeeded';
     if (normalized === 'warning') return 'run warned';
     if (normalized === 'skipped') return 'run skipped';
+    if (normalized === 'unknown') return 'run status unknown';
     return 'run failed';
 }
 

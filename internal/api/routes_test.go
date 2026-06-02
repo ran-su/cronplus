@@ -3,9 +3,11 @@ package api
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -102,4 +104,114 @@ func TestSetDeliveryCommandsEndpoint(t *testing.T) {
 	if len(profiles) != 1 || !profiles[0].InboundCommandsEnabled {
 		t.Fatalf("profile commands enabled = %+v, want true", profiles)
 	}
+}
+
+func TestCheckTaskPackageEndpoint(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := writeAPITaskPackage(t, "print('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ready\"}')\n", python, "")
+
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	body := []byte(fmt.Sprintf(`{"path":%q}`, dir))
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/check", bytes.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Status   string   `json:"status"`
+		NextRuns []string `json:"nextRuns"`
+		Run      struct {
+			Status string `json:"status"`
+		} `json:"run"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Status != "success" || response.Run.Status != "success" {
+		t.Fatalf("response = %+v, want successful package check", response)
+	}
+	if len(response.NextRuns) == 0 {
+		t.Fatalf("nextRuns empty in response: %+v", response)
+	}
+}
+
+func TestGetDeliveriesIncludesUsedByTasks(t *testing.T) {
+	dir := writeAPITaskPackage(t, "print('ok')\n", "", "delivery:\n  profiles: [telegram]\n")
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine.AddDeliveryProfile(models.DeliveryProfile{
+		ID:         "telegram",
+		Name:       "Telegram",
+		DriverType: "telegram",
+		Enabled:    true,
+		Config:     map[string]string{"bot_token": "token", "chat_id": "1"},
+	})
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/deliveries", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response struct {
+		Profiles []struct {
+			ID          string              `json:"id"`
+			UsedByTasks []map[string]string `json:"usedByTasks"`
+		} `json:"profiles"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(response.Profiles) != 1 || len(response.Profiles[0].UsedByTasks) != 1 {
+		t.Fatalf("profiles = %+v, want one usedBy task", response.Profiles)
+	}
+	if response.Profiles[0].UsedByTasks[0]["id"] != task.ID {
+		t.Fatalf("usedBy task = %+v, want task id %s", response.Profiles[0].UsedByTasks[0], task.ID)
+	}
+}
+
+func writeAPITaskPackage(t *testing.T, script, python, extraManifest string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	pythonLine := ""
+	if python != "" {
+		pythonLine = fmt.Sprintf("    python_base_interpreter: %q\n", python)
+	}
+	manifest := fmt.Sprintf(`manifest_version: 1
+script:
+  path: ./script.py
+  name: API Task
+runtime:
+  environment:
+    strategy: system
+%s  timeout_seconds: 5
+  max_output_kb: 64
+schedule:
+  expression: "*/5 * * * *"
+%s`, pythonLine, extraManifest)
+	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	return dir
 }

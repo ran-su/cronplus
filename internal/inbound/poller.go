@@ -20,10 +20,12 @@ type Poller struct {
 	profiles  func() []models.DeliveryProfile
 	onCommand func(models.CommandRecord)
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	running bool
-	wg      sync.WaitGroup
+	mu                    sync.Mutex
+	cancel                context.CancelFunc
+	running               bool
+	configuredCommandMenu map[string]bool
+	commandMenuLastTry    map[string]time.Time
+	wg                    sync.WaitGroup
 }
 
 // NewPoller creates a new Telegram inbound poller.
@@ -34,10 +36,12 @@ func NewPoller(
 	onCommand func(models.CommandRecord),
 ) *Poller {
 	return &Poller{
-		telegram:  telegram,
-		router:    router,
-		profiles:  profilesFn,
-		onCommand: onCommand,
+		telegram:              telegram,
+		router:                router,
+		profiles:              profilesFn,
+		onCommand:             onCommand,
+		configuredCommandMenu: make(map[string]bool),
+		commandMenuLastTry:    make(map[string]time.Time),
 	}
 }
 
@@ -150,6 +154,8 @@ func activeTelegramProfilesByToken(profiles []models.DeliveryProfile) map[string
 }
 
 func (p *Poller) pollToken(ctx context.Context, botToken string, profiles []models.DeliveryProfile, rl *rateLimiter) {
+	p.ensureCommandMenu(botToken)
+
 	offsets.Lock()
 	offset := offsets.m[botToken]
 	offsets.Unlock()
@@ -247,12 +253,39 @@ func (p *Poller) handleUpdate(ctx context.Context, botToken string, update deliv
 
 	if reply != nil {
 		record.ReplyText = reply.Text
-		_ = p.telegram.SendReply(botToken, chatIDStr, reply.Text)
+		_ = p.telegram.SendReplyWithOptions(botToken, chatIDStr, *reply)
 	}
 
 	if p.onCommand != nil {
 		p.onCommand(record)
 	}
+}
+
+const commandMenuRetryInterval = 30 * time.Minute
+
+func (p *Poller) ensureCommandMenu(botToken string) {
+	now := time.Now()
+
+	p.mu.Lock()
+	if p.configuredCommandMenu[botToken] {
+		p.mu.Unlock()
+		return
+	}
+	if lastTry, ok := p.commandMenuLastTry[botToken]; ok && now.Sub(lastTry) < commandMenuRetryInterval {
+		p.mu.Unlock()
+		return
+	}
+	p.commandMenuLastTry[botToken] = now
+	p.mu.Unlock()
+
+	if err := p.telegram.SetCommandMenu(botToken); err != nil {
+		log.Printf("[CronPlus] Warning: failed to configure Telegram command menu: %v", err)
+		return
+	}
+
+	p.mu.Lock()
+	p.configuredCommandMenu[botToken] = true
+	p.mu.Unlock()
 }
 
 func extractCommand(text string) string {

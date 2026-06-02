@@ -25,6 +25,7 @@ type InboundMessage struct {
 
 // OutboundReply is a reply to send back on the channel.
 type OutboundReply struct {
-	Text   string
-	Format string // "plain" or "markdown"
+	Text          string
+	Format        string     // "plain" or "markdown"
+	PresetOptions [][]string `json:"presetOptions,omitempty"`
 }

@@ -137,29 +137,6 @@ func TestAnswerCallbackQueryPostsAcknowledgement(t *testing.T) {
 	}
 }
 
-func TestSendReplyKeyboardRemovalRemovesPersistentKeyboard(t *testing.T) {
-	driver, transport := testTelegramDriver(`{"ok":true}`)
-
-	if err := driver.SendReplyKeyboardRemoval("token", "123", "Removing old shortcuts"); err != nil {
-		t.Fatalf("SendReplyKeyboardRemoval: %v", err)
-	}
-
-	call := transport.calls[0]
-	if call.Path != "/bottoken/sendMessage" {
-		t.Fatalf("request path = %q, want /bottoken/sendMessage", call.Path)
-	}
-	replyMarkup, ok := call.Body["reply_markup"].(map[string]any)
-	if !ok {
-		t.Fatalf("reply_markup missing from body: %+v", call.Body)
-	}
-	if replyMarkup["remove_keyboard"] != true {
-		t.Fatalf("reply markup = %+v, want remove_keyboard=true", replyMarkup)
-	}
-	if _, ok := replyMarkup["inline_keyboard"]; ok {
-		t.Fatalf("reply markup includes inline keyboard during removal: %+v", replyMarkup)
-	}
-}
-
 func TestGetUpdatesUsesConfiguredAPIBase(t *testing.T) {
 	driver, transport := testTelegramDriver(`{"ok":true,"result":[{"update_id":42,"message":{"chat":{"id":123,"type":"private"},"text":"/status","date":1717286400}}]}`)
 

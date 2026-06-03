@@ -53,21 +53,6 @@ func (t *TelegramDriver) SendReplyWithOptions(botToken, chatID string, reply mod
 	return t.sendMessage(botToken, chatID, reply.Text, reply.InlineActions)
 }
 
-// SendReplyKeyboardRemoval removes a previously persistent custom reply keyboard.
-func (t *TelegramDriver) SendReplyKeyboardRemoval(botToken, chatID, message string) error {
-	url := fmt.Sprintf("%s/bot%s/sendMessage", t.apiBase, botToken)
-
-	body := map[string]any{
-		"chat_id": chatID,
-		"text":    truncateTelegramMessage(message),
-		"reply_markup": map[string]any{
-			"remove_keyboard": true,
-		},
-	}
-
-	return t.postJSON(url, body, "remove reply keyboard")
-}
-
 func (t *TelegramDriver) sendMessage(botToken, chatID, text string, inlineActions [][]models.ReplyAction) error {
 	url := fmt.Sprintf("%s/bot%s/sendMessage", t.apiBase, botToken)
 

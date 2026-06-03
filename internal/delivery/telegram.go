@@ -47,23 +47,21 @@ func (t *TelegramDriver) SendReply(botToken, chatID, message string) error {
 	return t.SendReplyWithOptions(botToken, chatID, models.OutboundReply{Text: message})
 }
 
-// SendReplyWithOptions sends an inbound-command reply with optional Telegram UI presets.
+// SendReplyWithOptions sends an inbound-command reply with optional inline actions.
 func (t *TelegramDriver) SendReplyWithOptions(botToken, chatID string, reply models.OutboundReply) error {
-	return t.sendMessage(botToken, chatID, reply.Text, reply.PresetOptions)
+	return t.sendMessage(botToken, chatID, reply.Text, reply.InlineActions)
 }
 
-func (t *TelegramDriver) sendMessage(botToken, chatID, text string, presetOptions [][]string) error {
+func (t *TelegramDriver) sendMessage(botToken, chatID, text string, inlineActions [][]models.ReplyAction) error {
 	url := fmt.Sprintf("%s/bot%s/sendMessage", t.apiBase, botToken)
 
 	body := map[string]any{
 		"chat_id": chatID,
 		"text":    truncateTelegramMessage(text),
 	}
-	if keyboard := telegramReplyKeyboard(presetOptions); len(keyboard) > 0 {
+	if keyboard := telegramInlineKeyboard(inlineActions); len(keyboard) > 0 {
 		body["reply_markup"] = map[string]any{
-			"keyboard":        keyboard,
-			"resize_keyboard": true,
-			"is_persistent":   true,
+			"inline_keyboard": keyboard,
 		}
 	}
 
@@ -87,6 +85,15 @@ func (t *TelegramDriver) SetCommandMenu(botToken string) error {
 	return t.postJSON(url, body, "setMyCommands")
 }
 
+// AnswerCallbackQuery acknowledges an inline keyboard callback press.
+func (t *TelegramDriver) AnswerCallbackQuery(botToken, callbackQueryID string) error {
+	url := fmt.Sprintf("%s/bot%s/answerCallbackQuery", t.apiBase, botToken)
+	body := map[string]any{
+		"callback_query_id": callbackQueryID,
+	}
+	return t.postJSON(url, body, "answerCallbackQuery")
+}
+
 func (t *TelegramDriver) postJSON(url string, body map[string]any, description string) error {
 	jsonBody, err := json.Marshal(body)
 	if err != nil {
@@ -107,15 +114,23 @@ func (t *TelegramDriver) postJSON(url string, body map[string]any, description s
 	return nil
 }
 
-func telegramReplyKeyboard(rows [][]string) [][]map[string]string {
+const telegramCallbackDataMaxBytes = 64
+
+func telegramInlineKeyboard(rows [][]models.ReplyAction) [][]map[string]string {
 	keyboard := make([][]map[string]string, 0, len(rows))
 	for _, row := range rows {
 		buttonRow := make([]map[string]string, 0, len(row))
-		for _, text := range row {
-			if text == "" {
+		for _, action := range row {
+			if action.Label == "" || action.Command == "" {
 				continue
 			}
-			buttonRow = append(buttonRow, map[string]string{"text": text})
+			if len([]byte(action.Command)) > telegramCallbackDataMaxBytes {
+				continue
+			}
+			buttonRow = append(buttonRow, map[string]string{
+				"text":          action.Label,
+				"callback_data": action.Command,
+			})
 		}
 		if len(buttonRow) > 0 {
 			keyboard = append(keyboard, buttonRow)
@@ -175,8 +190,9 @@ func truncateTelegramMessage(text string) string {
 
 // TelegramUpdate represents a Telegram Bot API update.
 type TelegramUpdate struct {
-	UpdateID int64            `json:"update_id"`
-	Message  *TelegramMessage `json:"message"`
+	UpdateID      int64                  `json:"update_id"`
+	Message       *TelegramMessage       `json:"message"`
+	CallbackQuery *TelegramCallbackQuery `json:"callback_query"`
 }
 
 // TelegramMessage represents a message in a Telegram update.
@@ -199,4 +215,12 @@ type TelegramUser struct {
 type TelegramChat struct {
 	ID   int64  `json:"id"`
 	Type string `json:"type"`
+}
+
+// TelegramCallbackQuery represents a callback from an inline keyboard button.
+type TelegramCallbackQuery struct {
+	ID      string           `json:"id"`
+	From    *TelegramUser    `json:"from"`
+	Message *TelegramMessage `json:"message"`
+	Data    string           `json:"data"`
 }

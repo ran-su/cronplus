@@ -31,11 +31,11 @@ func TestExtractCommandNormalizesTelegramBotSuffix(t *testing.T) {
 	}
 }
 
-func TestRouteIncludesPresetOptions(t *testing.T) {
+func TestRouteIncludesContextualInlineActions(t *testing.T) {
 	router := NewRouter(CommandContext{
 		GetTasks: func() []*models.Task {
 			return []*models.Task{
-				{DisplayName: "Daily Report"},
+				{DisplayName: "Daily Report", Enabled: true},
 			}
 		},
 		NextRunTime: func(task *models.Task) *time.Time {
@@ -50,18 +50,23 @@ func TestRouteIncludesPresetOptions(t *testing.T) {
 	if reply == nil {
 		t.Fatal("reply is nil")
 	}
-	if !presetContains(reply.PresetOptions, "/status") || !presetContains(reply.PresetOptions, "/list") {
-		t.Fatalf("preset options = %+v, want status and list buttons", reply.PresetOptions)
+	if !inlineContains(reply.InlineActions, "/status") || !inlineContains(reply.InlineActions, "/list") {
+		t.Fatalf("inline actions = %+v, want status and list buttons", reply.InlineActions)
 	}
-	if !presetContains(reply.PresetOptions, "/run daily-report") || !presetContains(reply.PresetOptions, "/last daily-report") {
-		t.Fatalf("preset options = %+v, want task run/last buttons", reply.PresetOptions)
+
+	reply = router.Route(models.InboundMessage{RawText: "/list"})
+	if reply == nil {
+		t.Fatal("reply is nil")
+	}
+	if !inlineContains(reply.InlineActions, "/run daily-report") || !inlineContains(reply.InlineActions, "/last daily-report") {
+		t.Fatalf("inline actions = %+v, want task run/last buttons", reply.InlineActions)
 	}
 }
 
-func presetContains(rows [][]string, want string) bool {
+func inlineContains(rows [][]models.ReplyAction, want string) bool {
 	for _, row := range rows {
 		for _, got := range row {
-			if got == want {
+			if got.Command == want {
 				return true
 			}
 		}

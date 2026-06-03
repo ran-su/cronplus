@@ -78,14 +78,20 @@ func TestTruncateTelegramMessageIsRuneSafe(t *testing.T) {
 	}
 }
 
-func TestSendReplyWithOptionsIncludesReplyKeyboard(t *testing.T) {
+func TestSendReplyWithOptionsIncludesInlineKeyboard(t *testing.T) {
 	driver, transport := testTelegramDriver(`{"ok":true}`)
 
 	err := driver.SendReplyWithOptions("token", "123", models.OutboundReply{
 		Text: "Choose an option",
-		PresetOptions: [][]string{
-			{"/status", "/list"},
-			{"/run daily-report", "/last daily-report"},
+		InlineActions: [][]models.ReplyAction{
+			{
+				{Label: "Status", Command: "/status"},
+				{Label: "Tasks", Command: "/list"},
+			},
+			{
+				{Label: "Run daily-report", Command: "/run daily-report"},
+				{Label: "Last", Command: "/last daily-report"},
+			},
 		},
 	})
 	if err != nil {
@@ -100,14 +106,33 @@ func TestSendReplyWithOptionsIncludesReplyKeyboard(t *testing.T) {
 	if !ok {
 		t.Fatalf("reply_markup missing from body: %+v", call.Body)
 	}
-	if replyMarkup["resize_keyboard"] != true || replyMarkup["is_persistent"] != true {
-		t.Fatalf("reply markup flags = %+v, want persistent resized keyboard", replyMarkup)
+	if _, ok := replyMarkup["keyboard"]; ok {
+		t.Fatalf("reply markup includes persistent keyboard: %+v", replyMarkup)
 	}
-	keyboard := replyMarkup["keyboard"].([]any)
+	keyboard := replyMarkup["inline_keyboard"].([]any)
 	firstRow := keyboard[0].([]any)
 	firstButton := firstRow[0].(map[string]any)
-	if firstButton["text"] != "/status" {
-		t.Fatalf("first button = %+v, want /status", firstButton)
+	if firstButton["text"] != "Status" {
+		t.Fatalf("first button = %+v, want Status label", firstButton)
+	}
+	if firstButton["callback_data"] != "/status" {
+		t.Fatalf("first button = %+v, want /status callback", firstButton)
+	}
+}
+
+func TestAnswerCallbackQueryPostsAcknowledgement(t *testing.T) {
+	driver, transport := testTelegramDriver(`{"ok":true}`)
+
+	if err := driver.AnswerCallbackQuery("token", "callback-123"); err != nil {
+		t.Fatalf("AnswerCallbackQuery: %v", err)
+	}
+
+	call := transport.calls[0]
+	if call.Path != "/bottoken/answerCallbackQuery" {
+		t.Fatalf("request path = %q, want /bottoken/answerCallbackQuery", call.Path)
+	}
+	if call.Body["callback_query_id"] != "callback-123" {
+		t.Fatalf("body = %+v, want callback id", call.Body)
 	}
 }
 
@@ -127,6 +152,22 @@ func TestGetUpdatesUsesConfiguredAPIBase(t *testing.T) {
 	}
 	if len(updates) != 1 || updates[0].UpdateID != 42 {
 		t.Fatalf("updates = %+v, want one update", updates)
+	}
+}
+
+func TestGetUpdatesDecodesCallbackQuery(t *testing.T) {
+	driver, _ := testTelegramDriver(`{"ok":true,"result":[{"update_id":43,"callback_query":{"id":"cb-1","from":{"id":99},"message":{"chat":{"id":123,"type":"private"},"date":1717286400},"data":"/last daily-report"}}]}`)
+
+	updates, err := driver.GetUpdates(context.Background(), "token", 0, 2)
+	if err != nil {
+		t.Fatalf("GetUpdates: %v", err)
+	}
+	if len(updates) != 1 || updates[0].CallbackQuery == nil {
+		t.Fatalf("updates = %+v, want callback query", updates)
+	}
+	callback := updates[0].CallbackQuery
+	if callback.ID != "cb-1" || callback.Data != "/last daily-report" || callback.Message.Chat.ID != 123 {
+		t.Fatalf("callback = %+v, want decoded callback query", callback)
 	}
 }
 

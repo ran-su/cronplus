@@ -177,16 +177,22 @@ func (p *Poller) pollToken(ctx context.Context, botToken string, profiles []mode
 		}
 		offsets.Unlock()
 
-		if update.Message == nil || update.Message.Text == "" {
+		if update.Message != nil && update.Message.Text != "" {
+			chatIDStr := strconv.FormatInt(update.Message.Chat.ID, 10)
+			if !profileAuthorizedForChat(profiles, chatIDStr) {
+				continue
+			}
+			p.handleMessageUpdate(ctx, botToken, update.Message, chatIDStr, rl)
 			continue
 		}
 
-		chatIDStr := strconv.FormatInt(update.Message.Chat.ID, 10)
-		if !profileAuthorizedForChat(profiles, chatIDStr) {
-			continue
+		if update.CallbackQuery != nil && update.CallbackQuery.Message != nil && update.CallbackQuery.Data != "" {
+			chatIDStr := strconv.FormatInt(update.CallbackQuery.Message.Chat.ID, 10)
+			if !profileAuthorizedForChat(profiles, chatIDStr) {
+				continue
+			}
+			p.handleCallbackUpdate(ctx, botToken, update.CallbackQuery, chatIDStr, rl)
 		}
-
-		p.handleUpdate(ctx, botToken, update, chatIDStr, rl)
 	}
 }
 
@@ -212,7 +218,31 @@ func profileAllowsChat(profile models.DeliveryProfile, chatID string) bool {
 	return strings.TrimSpace(profile.Config["chat_id"]) == chatID
 }
 
-func (p *Poller) handleUpdate(ctx context.Context, botToken string, update delivery.TelegramUpdate, chatIDStr string, rl *rateLimiter) {
+func (p *Poller) handleMessageUpdate(ctx context.Context, botToken string, message *delivery.TelegramMessage, chatIDStr string, rl *rateLimiter) {
+	senderID := ""
+	if message.From != nil {
+		senderID = strconv.FormatInt(message.From.ID, 10)
+	}
+	p.handleCommand(ctx, botToken, chatIDStr, message.Text, senderID, time.Unix(message.Date, 0), rl)
+}
+
+func (p *Poller) handleCallbackUpdate(ctx context.Context, botToken string, callback *delivery.TelegramCallbackQuery, chatIDStr string, rl *rateLimiter) {
+	if err := p.telegram.AnswerCallbackQuery(botToken, callback.ID); err != nil {
+		log.Printf("[CronPlus] Warning: failed to answer Telegram callback: %v", err)
+	}
+
+	senderID := ""
+	if callback.From != nil {
+		senderID = strconv.FormatInt(callback.From.ID, 10)
+	}
+	receivedAt := time.Now()
+	if callback.Message != nil && callback.Message.Date > 0 {
+		receivedAt = time.Unix(callback.Message.Date, 0)
+	}
+	p.handleCommand(ctx, botToken, chatIDStr, callback.Data, senderID, receivedAt, rl)
+}
+
+func (p *Poller) handleCommand(ctx context.Context, botToken, chatIDStr, rawText, senderID string, receivedAt time.Time, rl *rateLimiter) {
 	select {
 	case <-ctx.Done():
 		return
@@ -227,16 +257,12 @@ func (p *Poller) handleUpdate(ctx context.Context, botToken string, update deliv
 	}
 
 	// Route the command
-	senderID := ""
-	if update.Message.From != nil {
-		senderID = strconv.FormatInt(update.Message.From.ID, 10)
-	}
 	msg := models.InboundMessage{
 		ChannelType: "telegram",
 		SenderID:    senderID,
 		ChatID:      chatIDStr,
-		RawText:     update.Message.Text,
-		ReceivedAt:  time.Unix(update.Message.Date, 0),
+		RawText:     rawText,
+		ReceivedAt:  receivedAt,
 	}
 
 	reply := p.router.Route(msg)
@@ -246,8 +272,8 @@ func (p *Poller) handleUpdate(ctx context.Context, botToken string, update deliv
 		ID:             fmt.Sprintf("%d", time.Now().UnixNano()),
 		ChannelType:    "telegram",
 		ChatID:         chatIDStr,
-		CommandText:    update.Message.Text,
-		MatchedCommand: extractCommand(update.Message.Text),
+		CommandText:    rawText,
+		MatchedCommand: extractCommand(rawText),
 		ReceivedAt:     msg.ReceivedAt,
 	}
 

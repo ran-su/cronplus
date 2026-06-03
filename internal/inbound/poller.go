@@ -25,6 +25,7 @@ type Poller struct {
 	running               bool
 	configuredCommandMenu map[string]bool
 	commandMenuLastTry    map[string]time.Time
+	removedReplyKeyboard  map[string]bool
 	wg                    sync.WaitGroup
 }
 
@@ -42,6 +43,7 @@ func NewPoller(
 		onCommand:             onCommand,
 		configuredCommandMenu: make(map[string]bool),
 		commandMenuLastTry:    make(map[string]time.Time),
+		removedReplyKeyboard:  make(map[string]bool),
 	}
 }
 
@@ -279,6 +281,7 @@ func (p *Poller) handleCommand(ctx context.Context, botToken, chatIDStr, rawText
 
 	if reply != nil {
 		record.ReplyText = reply.Text
+		p.removeReplyKeyboardIfNeeded(botToken, chatIDStr, *reply)
 		_ = p.telegram.SendReplyWithOptions(botToken, chatIDStr, *reply)
 	}
 
@@ -311,6 +314,29 @@ func (p *Poller) ensureCommandMenu(botToken string) {
 
 	p.mu.Lock()
 	p.configuredCommandMenu[botToken] = true
+	p.mu.Unlock()
+}
+
+func (p *Poller) removeReplyKeyboardIfNeeded(botToken, chatID string, reply models.OutboundReply) {
+	if len(reply.InlineActions) == 0 {
+		return
+	}
+
+	key := botToken + "\x00" + chatID
+	p.mu.Lock()
+	if p.removedReplyKeyboard[key] {
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
+
+	if err := p.telegram.SendReplyKeyboardRemoval(botToken, chatID, "Telegram shortcuts moved to inline buttons below."); err != nil {
+		log.Printf("[CronPlus] Warning: failed to remove Telegram reply keyboard: %v", err)
+		return
+	}
+
+	p.mu.Lock()
+	p.removedReplyKeyboard[key] = true
 	p.mu.Unlock()
 }
 

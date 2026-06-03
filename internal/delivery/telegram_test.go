@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -136,6 +137,29 @@ func TestAnswerCallbackQueryPostsAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSendReplyKeyboardRemovalRemovesPersistentKeyboard(t *testing.T) {
+	driver, transport := testTelegramDriver(`{"ok":true}`)
+
+	if err := driver.SendReplyKeyboardRemoval("token", "123", "Removing old shortcuts"); err != nil {
+		t.Fatalf("SendReplyKeyboardRemoval: %v", err)
+	}
+
+	call := transport.calls[0]
+	if call.Path != "/bottoken/sendMessage" {
+		t.Fatalf("request path = %q, want /bottoken/sendMessage", call.Path)
+	}
+	replyMarkup, ok := call.Body["reply_markup"].(map[string]any)
+	if !ok {
+		t.Fatalf("reply_markup missing from body: %+v", call.Body)
+	}
+	if replyMarkup["remove_keyboard"] != true {
+		t.Fatalf("reply markup = %+v, want remove_keyboard=true", replyMarkup)
+	}
+	if _, ok := replyMarkup["inline_keyboard"]; ok {
+		t.Fatalf("reply markup includes inline keyboard during removal: %+v", replyMarkup)
+	}
+}
+
 func TestGetUpdatesUsesConfiguredAPIBase(t *testing.T) {
 	driver, transport := testTelegramDriver(`{"ok":true,"result":[{"update_id":42,"message":{"chat":{"id":123,"type":"private"},"text":"/status","date":1717286400}}]}`)
 
@@ -147,8 +171,15 @@ func TestGetUpdatesUsesConfiguredAPIBase(t *testing.T) {
 	if call.Path != "/bottoken/getUpdates" {
 		t.Fatalf("request path = %q, want /bottoken/getUpdates", call.Path)
 	}
-	if call.Query != "offset=7&timeout=2" {
+	query, err := url.ParseQuery(call.Query)
+	if err != nil {
+		t.Fatalf("parse query: %v", err)
+	}
+	if query.Get("offset") != "7" || query.Get("timeout") != "2" {
 		t.Fatalf("query = %q, want offset=7&timeout=2", call.Query)
+	}
+	if query.Get("allowed_updates") != `["message","callback_query"]` {
+		t.Fatalf("allowed_updates = %q, want message and callback_query", query.Get("allowed_updates"))
 	}
 	if len(updates) != 1 || updates[0].UpdateID != 42 {
 		t.Fatalf("updates = %+v, want one update", updates)

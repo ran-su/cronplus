@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 
 	"github.com/ran-su/cronplus/internal/models"
@@ -50,6 +51,21 @@ func (t *TelegramDriver) SendReply(botToken, chatID, message string) error {
 // SendReplyWithOptions sends an inbound-command reply with optional inline actions.
 func (t *TelegramDriver) SendReplyWithOptions(botToken, chatID string, reply models.OutboundReply) error {
 	return t.sendMessage(botToken, chatID, reply.Text, reply.InlineActions)
+}
+
+// SendReplyKeyboardRemoval removes a previously persistent custom reply keyboard.
+func (t *TelegramDriver) SendReplyKeyboardRemoval(botToken, chatID, message string) error {
+	url := fmt.Sprintf("%s/bot%s/sendMessage", t.apiBase, botToken)
+
+	body := map[string]any{
+		"chat_id": chatID,
+		"text":    truncateTelegramMessage(message),
+		"reply_markup": map[string]any{
+			"remove_keyboard": true,
+		},
+	}
+
+	return t.postJSON(url, body, "remove reply keyboard")
 }
 
 func (t *TelegramDriver) sendMessage(botToken, chatID, text string, inlineActions [][]models.ReplyAction) error {
@@ -141,10 +157,17 @@ func telegramInlineKeyboard(rows [][]models.ReplyAction) [][]map[string]string {
 
 // GetUpdates fetches new messages from the Telegram Bot API (for inbound commands).
 func (t *TelegramDriver) GetUpdates(ctx context.Context, botToken string, offset int64, timeoutSec int) ([]TelegramUpdate, error) {
-	url := fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&timeout=%d", t.apiBase,
-		botToken, offset, timeoutSec)
+	endpoint, err := url.Parse(fmt.Sprintf("%s/bot%s/getUpdates", t.apiBase, botToken))
+	if err != nil {
+		return nil, fmt.Errorf("failed to build getUpdates URL: %w", err)
+	}
+	query := endpoint.Query()
+	query.Set("offset", fmt.Sprintf("%d", offset))
+	query.Set("timeout", fmt.Sprintf("%d", timeoutSec))
+	query.Set("allowed_updates", `["message","callback_query"]`)
+	endpoint.RawQuery = query.Encode()
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build getUpdates request: %w", err)
 	}

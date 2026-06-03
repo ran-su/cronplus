@@ -35,13 +35,16 @@ func TestRouteIncludesContextualInlineActions(t *testing.T) {
 	router := NewRouter(CommandContext{
 		GetTasks: func() []*models.Task {
 			return []*models.Task{
-				{DisplayName: "Daily Report", Enabled: true},
+				{ID: "task-1", DisplayName: "Daily Report", Enabled: true},
 			}
 		},
 		NextRunTime: func(task *models.Task) *time.Time {
 			return nil
 		},
 		GetRunHistory: func(taskID string) []models.RunRecord {
+			return []models.RunRecord{{TaskID: taskID, FinishedAt: time.Now(), Outcome: models.RunOutcome{ExitCode: 0}}}
+		},
+		TriggerRun: func(taskID, trigger string) error {
 			return nil
 		},
 	})
@@ -53,6 +56,17 @@ func TestRouteIncludesContextualInlineActions(t *testing.T) {
 	if !inlineContains(reply.InlineActions, "/status") || !inlineContains(reply.InlineActions, "/list") {
 		t.Fatalf("inline actions = %+v, want status and list buttons", reply.InlineActions)
 	}
+	if inlineContains(reply.InlineActions, "/help") {
+		t.Fatalf("inline actions = %+v, should not include command that produced help", reply.InlineActions)
+	}
+
+	reply = router.Route(models.InboundMessage{RawText: "/status"})
+	if reply == nil {
+		t.Fatal("reply is nil")
+	}
+	if inlineContains(reply.InlineActions, "/status") {
+		t.Fatalf("inline actions = %+v, should not include command that produced status", reply.InlineActions)
+	}
 
 	reply = router.Route(models.InboundMessage{RawText: "/list"})
 	if reply == nil {
@@ -60,6 +74,28 @@ func TestRouteIncludesContextualInlineActions(t *testing.T) {
 	}
 	if !inlineContains(reply.InlineActions, "/run daily-report") || !inlineContains(reply.InlineActions, "/last daily-report") {
 		t.Fatalf("inline actions = %+v, want task run/last buttons", reply.InlineActions)
+	}
+
+	reply = router.Route(models.InboundMessage{RawText: "/run daily-report"})
+	if reply == nil {
+		t.Fatal("reply is nil")
+	}
+	if inlineContains(reply.InlineActions, "/run daily-report") {
+		t.Fatalf("inline actions = %+v, should not include command that produced run response", reply.InlineActions)
+	}
+	if !inlineContains(reply.InlineActions, "/last daily-report") {
+		t.Fatalf("inline actions = %+v, want last button after run", reply.InlineActions)
+	}
+
+	reply = router.Route(models.InboundMessage{RawText: "/last daily-report"})
+	if reply == nil {
+		t.Fatal("reply is nil")
+	}
+	if inlineContains(reply.InlineActions, "/last daily-report") {
+		t.Fatalf("inline actions = %+v, should not include command that produced last response", reply.InlineActions)
+	}
+	if !inlineContains(reply.InlineActions, "/run daily-report") {
+		t.Fatalf("inline actions = %+v, want run button after last", reply.InlineActions)
 	}
 }
 

@@ -111,7 +111,7 @@ func (r *Router) handleStatus() *models.OutboundReply {
 	}
 
 	msg += fmt.Sprintf("Recent failures: %d", recentFailures)
-	return r.reply(msg, r.generalActionRows()...)
+	return r.reply(msg, r.generalActionRows("/status")...)
 }
 
 func (r *Router) handleList() *models.OutboundReply {
@@ -156,7 +156,7 @@ func (r *Router) handleHelp() *models.OutboundReply {
 /last <task> — Last run result
 /enable <task> — Enable a task
 /disable <task> — Disable a task`
-	return r.reply(msg, r.generalActionRows()...)
+	return r.reply(msg, r.generalActionRows("/help")...)
 }
 
 func (r *Router) handleRun(slug string) *models.OutboundReply {
@@ -166,10 +166,10 @@ func (r *Router) handleRun(slug string) *models.OutboundReply {
 	}
 
 	if err := r.ctx.TriggerRun(task.ID, "command"); err != nil {
-		return r.reply(fmt.Sprintf("❌ Failed to run %s: %s", task.DisplayName, err.Error()), r.taskActionRows(task)...)
+		return r.reply(fmt.Sprintf("❌ Failed to run %s: %s", task.DisplayName, err.Error()), r.taskActionRows(task, "/run "+task.Slug())...)
 	}
 
-	return r.reply(fmt.Sprintf("✅ Started %s.\nUse /last %s for the latest result.", task.DisplayName, task.Slug()), r.taskActionRows(task)...)
+	return r.reply(fmt.Sprintf("✅ Started %s.\nUse /last %s for the latest result.", task.DisplayName, task.Slug()), r.taskActionRows(task, "/run "+task.Slug())...)
 }
 
 func (r *Router) handleLast(slug string) *models.OutboundReply {
@@ -180,7 +180,7 @@ func (r *Router) handleLast(slug string) *models.OutboundReply {
 
 	runs := r.ctx.GetRunHistory(task.ID)
 	if len(runs) == 0 {
-		return r.reply(fmt.Sprintf("No runs recorded for %s.", task.DisplayName), r.taskActionRows(task)...)
+		return r.reply(fmt.Sprintf("No runs recorded for %s.", task.DisplayName), r.taskActionRows(task, "/last "+task.Slug())...)
 	}
 
 	last := runs[0]
@@ -200,7 +200,7 @@ func (r *Router) handleLast(slug string) *models.OutboundReply {
 		msg += "\n" + last.Outcome.ParsedResult.Summary
 	}
 
-	return r.reply(msg, r.taskActionRows(task)...)
+	return r.reply(msg, r.taskActionRows(task, "/last "+task.Slug())...)
 }
 
 func (r *Router) handleSetEnabled(slug string, enabled bool) *models.OutboundReply {
@@ -249,14 +249,14 @@ func action(label, command string) []models.ReplyAction {
 	return []models.ReplyAction{{Label: label, Command: command}}
 }
 
-func (r *Router) generalActionRows() [][]models.ReplyAction {
-	return [][]models.ReplyAction{
+func (r *Router) generalActionRows(exclude ...string) [][]models.ReplyAction {
+	return filterActionRows([][]models.ReplyAction{
 		{{Label: "Status", Command: "/status"}, {Label: "Tasks", Command: "/list"}},
 		{{Label: "Help", Command: "/help"}},
-	}
+	}, exclude...)
 }
 
-func (r *Router) taskActionRows(task *models.Task) [][]models.ReplyAction {
+func (r *Router) taskActionRows(task *models.Task, exclude ...string) [][]models.ReplyAction {
 	if task == nil {
 		return nil
 	}
@@ -272,7 +272,7 @@ func (r *Router) taskActionRows(task *models.Task) [][]models.ReplyAction {
 	} else {
 		rows = append(rows, action("Enable", "/enable "+slug))
 	}
-	return rows
+	return filterActionRows(rows, exclude...)
 }
 
 func (r *Router) listActionRows() [][]models.ReplyAction {
@@ -316,6 +316,30 @@ func compactActionRows(rows [][]models.ReplyAction) [][]models.ReplyAction {
 		}
 	}
 	return compact
+}
+
+func filterActionRows(rows [][]models.ReplyAction, exclude ...string) [][]models.ReplyAction {
+	if len(exclude) == 0 {
+		return compactActionRows(rows)
+	}
+	excluded := make(map[string]bool, len(exclude))
+	for _, command := range exclude {
+		excluded[strings.TrimSpace(command)] = true
+	}
+	filtered := make([][]models.ReplyAction, 0, len(rows))
+	for _, row := range rows {
+		next := make([]models.ReplyAction, 0, len(row))
+		for _, item := range row {
+			if excluded[strings.TrimSpace(item.Command)] {
+				continue
+			}
+			next = append(next, item)
+		}
+		if len(next) > 0 {
+			filtered = append(filtered, next)
+		}
+	}
+	return compactActionRows(filtered)
 }
 
 func normalizeCommand(token string) string {

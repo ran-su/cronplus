@@ -25,6 +25,8 @@ func LoadOrCreateToken(path string) (string, error) {
 		if token != "" {
 			return token, nil
 		}
+	} else if !os.IsNotExist(err) {
+		return "", fmt.Errorf("failed to read token file: %w", err)
 	}
 
 	token, err := generateToken(32)

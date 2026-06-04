@@ -31,6 +31,7 @@ Example: `Price Watch` → `price-watch`
 - Uses `getUpdates` long polling (not webhooks)
 - Poll interval: 2 seconds
 - Reuses delivery profile bot token
+- Clears the Telegram slash-command menu and uses contextual inline buttons only
 - Only processes messages from authorized chat IDs
 - If `authorizedChatIDs` is empty, the profile's configured `chat_id` is the only authorized chat
 - Tracks `update_id` offset to avoid double-processing

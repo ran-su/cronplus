@@ -2,6 +2,7 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -406,7 +407,12 @@ func handleCreateDelivery(engine *core.Engine) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
 			return
 		}
-		id := engine.AddDeliveryProfile(p)
+		normalized, err := normalizeNewDeliveryProfile(p)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_delivery_profile", err.Error())
+			return
+		}
+		id := engine.AddDeliveryProfile(normalized)
 		if !persistOrError(w, engine) {
 			return
 		}
@@ -422,7 +428,16 @@ func handleUpdateDelivery(engine *core.Engine) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
 			return
 		}
+		existing, ok := deliveryProfileByID(engine, id)
+		if !ok {
+			writeError(w, http.StatusNotFound, "profile_not_found", "delivery profile not found: "+id)
+			return
+		}
 		p.ID = id
+		if err := validateUpdatedDeliveryProfile(existing, p); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_delivery_profile", err.Error())
+			return
+		}
 		if err := engine.UpdateDeliveryProfile(p); err != nil {
 			writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
 			return
@@ -468,6 +483,75 @@ func handleTestDelivery(engine *core.Engine) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	}
+}
+
+func normalizeNewDeliveryProfile(p models.DeliveryProfile) (models.DeliveryProfile, error) {
+	p.Name = strings.TrimSpace(p.Name)
+	p.DriverType = strings.TrimSpace(p.DriverType)
+	if p.DriverType == "" {
+		p.DriverType = "telegram"
+	}
+	if p.Name == "" {
+		return p, fmt.Errorf("profile name is required")
+	}
+	if p.DriverType != "telegram" {
+		return p, fmt.Errorf("unsupported delivery driver %q", p.DriverType)
+	}
+	if strings.TrimSpace(p.Config["bot_token"]) == "" {
+		return p, fmt.Errorf("telegram bot token is required")
+	}
+	if strings.TrimSpace(p.Config["chat_id"]) == "" {
+		return p, fmt.Errorf("telegram chat ID is required")
+	}
+	return p, nil
+}
+
+func validateUpdatedDeliveryProfile(existing, update models.DeliveryProfile) error {
+	name := strings.TrimSpace(update.Name)
+	if name == "" {
+		name = existing.Name
+	}
+	if name == "" {
+		return fmt.Errorf("profile name is required")
+	}
+	driverType := strings.TrimSpace(update.DriverType)
+	if driverType == "" {
+		driverType = existing.DriverType
+	}
+	if driverType != "telegram" {
+		return fmt.Errorf("unsupported delivery driver %q", driverType)
+	}
+	config := mergedDeliveryConfigForValidation(existing.Config, update.Config)
+	if strings.TrimSpace(config["bot_token"]) == "" {
+		return fmt.Errorf("telegram bot token is required")
+	}
+	if strings.TrimSpace(config["chat_id"]) == "" {
+		return fmt.Errorf("telegram chat ID is required")
+	}
+	return nil
+}
+
+func deliveryProfileByID(engine *core.Engine, id string) (models.DeliveryProfile, bool) {
+	for _, profile := range engine.DeliveryProfiles() {
+		if profile.ID == id {
+			return profile, true
+		}
+	}
+	return models.DeliveryProfile{}, false
+}
+
+func mergedDeliveryConfigForValidation(existing, updates map[string]string) map[string]string {
+	merged := make(map[string]string, len(existing)+len(updates))
+	for key, value := range existing {
+		merged[key] = value
+	}
+	for key, value := range updates {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		merged[key] = value
+	}
+	return merged
 }
 
 func handleDeleteDelivery(engine *core.Engine) http.HandlerFunc {
@@ -646,7 +730,6 @@ func formatTimes(times []time.Time) []string {
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.WriteHeader(status)
 	json.NewEncoder(w).Encode(data)
 }

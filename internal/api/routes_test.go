@@ -82,6 +82,67 @@ func TestCreateDeliveryReturnsNameSlugID(t *testing.T) {
 	}
 }
 
+func TestCreateDeliveryRejectsUnsupportedDriver(t *testing.T) {
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	body := []byte(`{"name":"Email","driverType":"email","enabled":true,"config":{"bot_token":"token","chat_id":"1"}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/deliveries", bytes.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(engine.DeliveryProfiles()) != 0 {
+		t.Fatalf("profiles = %+v, want none persisted", engine.DeliveryProfiles())
+	}
+}
+
+func TestCreateDeliveryRejectsMissingTelegramConfig(t *testing.T) {
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	body := []byte(`{"name":"Telegram","driverType":"telegram","enabled":true,"config":{"bot_token":"token"}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/deliveries", bytes.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+	if len(engine.DeliveryProfiles()) != 0 {
+		t.Fatalf("profiles = %+v, want none persisted", engine.DeliveryProfiles())
+	}
+}
+
+func TestUpdateDeliveryValidationUsesPreservedSecrets(t *testing.T) {
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	id := engine.AddDeliveryProfile(models.DeliveryProfile{
+		Name:       "Telegram",
+		DriverType: "telegram",
+		Enabled:    true,
+		Config:     map[string]string{"bot_token": "token", "chat_id": "1"},
+	})
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	body := []byte(`{"name":"Telegram Updated","driverType":"telegram","enabled":true,"config":{}}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/deliveries/"+id, bytes.NewReader(body))
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	profiles := engine.DeliveryProfiles()
+	if profiles[0].Config["bot_token"] != "token" || profiles[0].Config["chat_id"] != "1" {
+		t.Fatalf("profile config = %+v, want preserved token and chat", profiles[0].Config)
+	}
+}
+
 func TestSetDeliveryCommandsEndpoint(t *testing.T) {
 	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
 	id := engine.AddDeliveryProfile(models.DeliveryProfile{

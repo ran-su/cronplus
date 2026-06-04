@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/ran-su/cronplus/internal/models"
@@ -69,21 +70,10 @@ func (t *TelegramDriver) sendMessage(botToken, chatID, text string, inlineAction
 	return t.postJSON(url, body, "telegram API")
 }
 
-// SetCommandMenu configures Telegram's slash-command picker for this bot token.
-func (t *TelegramDriver) SetCommandMenu(botToken string) error {
-	url := fmt.Sprintf("%s/bot%s/setMyCommands", t.apiBase, botToken)
-	body := map[string]any{
-		"commands": []map[string]string{
-			{"command": "status", "description": "App health summary"},
-			{"command": "list", "description": "List tasks"},
-			{"command": "help", "description": "Show command help"},
-			{"command": "run", "description": "Run a task by slug"},
-			{"command": "last", "description": "Show latest task result"},
-			{"command": "enable", "description": "Enable a task"},
-			{"command": "disable", "description": "Disable a task"},
-		},
-	}
-	return t.postJSON(url, body, "setMyCommands")
+// DeleteCommandMenu clears Telegram's slash-command picker for this bot token.
+func (t *TelegramDriver) DeleteCommandMenu(botToken string) error {
+	url := fmt.Sprintf("%s/bot%s/deleteMyCommands", t.apiBase, botToken)
+	return t.postJSON(url, map[string]any{}, "deleteMyCommands")
 }
 
 // AnswerCallbackQuery acknowledges an inline keyboard callback press.
@@ -107,12 +97,51 @@ func (t *TelegramDriver) postJSON(url string, body map[string]any, description s
 	}
 	defer resp.Body.Close()
 
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 	if resp.StatusCode != http.StatusOK {
-		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
-		return fmt.Errorf("%s returned %d: %s", description, resp.StatusCode, string(respBody))
+		return fmt.Errorf("%s returned %d: %s", description, resp.StatusCode, telegramResponseMessage(respBody))
+	}
+
+	var result telegramAPIResponse
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("%s returned invalid JSON: %w", description, err)
+	}
+	if !result.OK {
+		return fmt.Errorf("%s returned ok=false: %s", description, result.message())
 	}
 
 	return nil
+}
+
+type telegramAPIResponse struct {
+	OK          bool   `json:"ok"`
+	ErrorCode   int    `json:"error_code,omitempty"`
+	Description string `json:"description,omitempty"`
+}
+
+func (r telegramAPIResponse) message() string {
+	if r.Description != "" {
+		if r.ErrorCode != 0 {
+			return fmt.Sprintf("%d %s", r.ErrorCode, r.Description)
+		}
+		return r.Description
+	}
+	if r.ErrorCode != 0 {
+		return fmt.Sprintf("error_code=%d", r.ErrorCode)
+	}
+	return "no description"
+}
+
+func telegramResponseMessage(body []byte) string {
+	var result telegramAPIResponse
+	if err := json.Unmarshal(body, &result); err == nil && (result.Description != "" || result.ErrorCode != 0) {
+		return result.message()
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return "empty response"
+	}
+	return text
 }
 
 const telegramCallbackDataMaxBytes = 64
@@ -162,18 +191,22 @@ func (t *TelegramDriver) GetUpdates(ctx context.Context, botToken string, offset
 		return nil, fmt.Errorf("getUpdates failed: %w", err)
 	}
 	defer resp.Body.Close()
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("getUpdates returned %d: %s", resp.StatusCode, telegramResponseMessage(respBody))
+	}
 
 	var result struct {
-		OK     bool             `json:"ok"`
+		telegramAPIResponse
 		Result []TelegramUpdate `json:"result"`
 	}
 
-	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+	if err := json.Unmarshal(respBody, &result); err != nil {
 		return nil, fmt.Errorf("failed to decode getUpdates response: %w", err)
 	}
 
 	if !result.OK {
-		return nil, fmt.Errorf("getUpdates returned ok=false")
+		return nil, fmt.Errorf("getUpdates returned ok=false: %s", result.message())
 	}
 
 	return result.Result, nil

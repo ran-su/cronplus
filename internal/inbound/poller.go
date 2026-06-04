@@ -20,12 +20,12 @@ type Poller struct {
 	profiles  func() []models.DeliveryProfile
 	onCommand func(models.CommandRecord)
 
-	mu                    sync.Mutex
-	cancel                context.CancelFunc
-	running               bool
-	configuredCommandMenu map[string]bool
-	commandMenuLastTry    map[string]time.Time
-	wg                    sync.WaitGroup
+	mu                 sync.Mutex
+	cancel             context.CancelFunc
+	running            bool
+	clearedCommandMenu map[string]bool
+	commandMenuLastTry map[string]time.Time
+	wg                 sync.WaitGroup
 }
 
 // NewPoller creates a new Telegram inbound poller.
@@ -36,12 +36,12 @@ func NewPoller(
 	onCommand func(models.CommandRecord),
 ) *Poller {
 	return &Poller{
-		telegram:              telegram,
-		router:                router,
-		profiles:              profilesFn,
-		onCommand:             onCommand,
-		configuredCommandMenu: make(map[string]bool),
-		commandMenuLastTry:    make(map[string]time.Time),
+		telegram:           telegram,
+		router:             router,
+		profiles:           profilesFn,
+		onCommand:          onCommand,
+		clearedCommandMenu: make(map[string]bool),
+		commandMenuLastTry: make(map[string]time.Time),
 	}
 }
 
@@ -154,7 +154,7 @@ func activeTelegramProfilesByToken(profiles []models.DeliveryProfile) map[string
 }
 
 func (p *Poller) pollToken(ctx context.Context, botToken string, profiles []models.DeliveryProfile, rl *rateLimiter) {
-	p.ensureCommandMenu(botToken)
+	p.ensureCommandMenuRemoved(botToken)
 
 	offsets.Lock()
 	offset := offsets.m[botToken]
@@ -189,6 +189,9 @@ func (p *Poller) pollToken(ctx context.Context, botToken string, profiles []mode
 		if update.CallbackQuery != nil && update.CallbackQuery.Message != nil && update.CallbackQuery.Data != "" {
 			chatIDStr := strconv.FormatInt(update.CallbackQuery.Message.Chat.ID, 10)
 			if !profileAuthorizedForChat(profiles, chatIDStr) {
+				if err := p.telegram.AnswerCallbackQuery(botToken, update.CallbackQuery.ID); err != nil {
+					log.Printf("[CronPlus] Warning: failed to answer unauthorized Telegram callback: %v", err)
+				}
 				continue
 			}
 			p.handleCallbackUpdate(ctx, botToken, update.CallbackQuery, chatIDStr, rl)
@@ -251,8 +254,10 @@ func (p *Poller) handleCommand(ctx context.Context, botToken, chatIDStr, rawText
 
 	// Rate limiting
 	if !rl.allow(chatIDStr) {
-		_ = p.telegram.SendReply(botToken, chatIDStr,
-			"⚠️ Rate limited. Max 10 commands per minute.")
+		if err := p.telegram.SendReply(botToken, chatIDStr,
+			"⚠️ Rate limited. Max 10 commands per minute."); err != nil {
+			log.Printf("[CronPlus] Warning: failed to send Telegram rate-limit reply: %v", err)
+		}
 		return
 	}
 
@@ -279,7 +284,10 @@ func (p *Poller) handleCommand(ctx context.Context, botToken, chatIDStr, rawText
 
 	if reply != nil {
 		record.ReplyText = reply.Text
-		_ = p.telegram.SendReplyWithOptions(botToken, chatIDStr, *reply)
+		if err := p.telegram.SendReplyWithOptions(botToken, chatIDStr, *reply); err != nil {
+			record.Error = "reply send failed: " + err.Error()
+			log.Printf("[CronPlus] Warning: failed to send Telegram command reply: %v", err)
+		}
 	}
 
 	if p.onCommand != nil {
@@ -289,11 +297,11 @@ func (p *Poller) handleCommand(ctx context.Context, botToken, chatIDStr, rawText
 
 const commandMenuRetryInterval = 30 * time.Minute
 
-func (p *Poller) ensureCommandMenu(botToken string) {
+func (p *Poller) ensureCommandMenuRemoved(botToken string) {
 	now := time.Now()
 
 	p.mu.Lock()
-	if p.configuredCommandMenu[botToken] {
+	if p.clearedCommandMenu[botToken] {
 		p.mu.Unlock()
 		return
 	}
@@ -304,13 +312,13 @@ func (p *Poller) ensureCommandMenu(botToken string) {
 	p.commandMenuLastTry[botToken] = now
 	p.mu.Unlock()
 
-	if err := p.telegram.SetCommandMenu(botToken); err != nil {
-		log.Printf("[CronPlus] Warning: failed to configure Telegram command menu: %v", err)
+	if err := p.telegram.DeleteCommandMenu(botToken); err != nil {
+		log.Printf("[CronPlus] Warning: failed to clear Telegram command menu: %v", err)
 		return
 	}
 
 	p.mu.Lock()
-	p.configuredCommandMenu[botToken] = true
+	p.clearedCommandMenu[botToken] = true
 	p.mu.Unlock()
 }
 

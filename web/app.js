@@ -1,7 +1,9 @@
 // CronPlus Web UI — Single Page Application
 
 const API_BASE = '';
-const OFFLINE_CACHE_KEY = 'cronplus_offline_cache_v1';
+const OFFLINE_CACHE_KEY = 'cronplus_offline_cache_v2';
+const OFFLINE_CACHE_KEYS_TO_CLEAR = ['cronplus_offline_cache_v1'];
+const OFFLINE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let authToken = localStorage.getItem('cronplus_token') || '';
 let sseConnection = null;
 let currentPage = 'dashboard';
@@ -580,7 +582,7 @@ function renderTaskDetail(path) {
             <h1>${esc(task.name)}</h1>
             <span class="badge badge-${task.enabled ? 'success' : 'muted'}">${task.enabled ? 'Enabled' : 'Disabled'}</span>
             ${task.manifestStatus?.changed ? '<span class="badge badge-warning">Manifest Changed</span>' : ''}
-            <div style="margin-left:auto; display:flex; gap:12px; align-items:center;">
+            <div class="detail-actions">
                 <button class="btn btn-primary" onclick="runTask('${id}')">▶ Run Now</button>
                 <button class="btn" onclick="checkImportedTask('${id}')">Check</button>
                 <button class="btn" onclick="reloadTask('${id}')">Reload Manifest</button>
@@ -1216,18 +1218,31 @@ function renderCommandsContent() {
         ${appState.commands.length === 0 ?
             '<div class="empty-state"><div class="icon">💬</div><h3>No commands received</h3></div>' :
             `<div class="table-wrapper"><table>
-                <thead><tr><th>Command</th><th>Chat</th><th>Reply</th><th>Time</th></tr></thead>
+                <thead><tr><th>Command</th><th>Chat</th><th>Reply / Error</th><th>Time</th></tr></thead>
                 <tbody>${appState.commands.map(c => `
                     <tr>
                         <td style="font-family:var(--font-mono)">${esc(c.commandText)}</td>
                         <td>${esc(c.chatID)}</td>
-                        <td>${esc((c.replyText || '').substring(0, 80))}${(c.replyText||'').length > 80 ? '...' : ''}</td>
+                        <td>${renderCommandReplyCell(c)}</td>
                         <td>${formatTime(c.receivedAt)}</td>
                     </tr>
                 `).join('')}</tbody>
             </table></div>`
         }
     `;
+}
+
+function renderCommandReplyCell(command) {
+    if (command.error) {
+        return `<span class="delivery-error">${esc(truncateText(command.error, 100))}</span>`;
+    }
+    return esc(truncateText(command.replyText || '', 100));
+}
+
+function truncateText(value, maxLength) {
+    const text = String(value || '');
+    if (text.length <= maxLength) return text;
+    return text.slice(0, Math.max(0, maxLength - 3)) + '...';
 }
 
 async function clearCommands() {
@@ -1269,6 +1284,10 @@ function renderSettings() {
             <div class="manifest-row"><span class="label">State File</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
             <div class="manifest-row"><span class="label">Token File</span><span class="value">${esc(server.tokenPath || '~/.config/cronplus/auth-token')}</span></div>
             <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
+        </div>
+        <div class="detail-card" style="max-width:500px;margin-top:16px">
+            <h3>Offline Cache</h3>
+            <button class="btn btn-sm" onclick="clearOfflineCache()">Clear Cache</button>
         </div>
     `;
 }
@@ -1471,12 +1490,16 @@ function setConnectionState(connected) {
 
 function loadOfflineCache() {
     try {
+        OFFLINE_CACHE_KEYS_TO_CLEAR.forEach(key => localStorage.removeItem(key));
         const cached = JSON.parse(localStorage.getItem(OFFLINE_CACHE_KEY) || '{}');
+        if (cacheExpired(cached.savedAt)) {
+            localStorage.removeItem(OFFLINE_CACHE_KEY);
+            return;
+        }
         if (cached.status) appState.status = cached.status;
         if (Array.isArray(cached.tasks)) appState.tasks = cached.tasks;
-        if (cached.taskDetails && typeof cached.taskDetails === 'object') appState.taskDetails = cached.taskDetails;
-        if (cached.runHistories && typeof cached.runHistories === 'object') appState.runHistories = cached.runHistories;
-        if (cached.runDetails && typeof cached.runDetails === 'object') appState.runDetails = cached.runDetails;
+        if (cached.taskDetails && typeof cached.taskDetails === 'object') appState.taskDetails = sanitizeTaskMapForCache(cached.taskDetails);
+        if (cached.runHistories && typeof cached.runHistories === 'object') appState.runHistories = sanitizeRunHistoriesForCache(cached.runHistories);
         if (Array.isArray(cached.deliveries)) appState.deliveries = cached.deliveries;
         appStateSignatures.status = stateSignature(appState.status);
         appStateSignatures.tasks = stateSignature(appState.tasks);
@@ -1491,15 +1514,88 @@ function saveOfflineCache() {
         localStorage.setItem(OFFLINE_CACHE_KEY, JSON.stringify({
             status: appState.status,
             tasks: appState.tasks,
-            taskDetails: appState.taskDetails,
-            runHistories: appState.runHistories,
-            runDetails: appState.runDetails,
+            taskDetails: sanitizeTaskMapForCache(appState.taskDetails),
+            runHistories: sanitizeRunHistoriesForCache(appState.runHistories),
             deliveries: appState.deliveries,
             savedAt: new Date().toISOString()
         }));
     } catch {
         // Ignore quota or private-mode storage failures; live state still works.
     }
+}
+
+function clearOfflineCache() {
+    localStorage.removeItem(OFFLINE_CACHE_KEY);
+    OFFLINE_CACHE_KEYS_TO_CLEAR.forEach(key => localStorage.removeItem(key));
+    appState.taskDetails = {};
+    appState.runHistories = {};
+    appState.runDetails = {};
+    toast('Offline cache cleared', 'info');
+    if (currentPage.startsWith('/tasks')) renderCurrentPage();
+}
+
+function cacheExpired(savedAt) {
+    if (!savedAt) return false;
+    const savedTime = Date.parse(savedAt);
+    if (!Number.isFinite(savedTime)) return true;
+    return Date.now() - savedTime > OFFLINE_CACHE_MAX_AGE_MS;
+}
+
+function sanitizeTaskMapForCache(taskDetails) {
+    return Object.fromEntries(Object.entries(taskDetails || {}).map(([id, task]) => [id, sanitizeTaskForCache(task)]));
+}
+
+function sanitizeTaskForCache(task) {
+    const copy = cloneJSON(task);
+    if (!copy || typeof copy !== 'object') return copy;
+    if (copy.manifest?.runtime?.env) {
+        copy.manifest.runtime.env = {};
+    }
+    if (Array.isArray(copy.manifest?.delivery?.inlineProfiles)) {
+        copy.manifest.delivery.inlineProfiles = copy.manifest.delivery.inlineProfiles.map(profile => ({
+            ...profile,
+            config: {}
+        }));
+    }
+    return copy;
+}
+
+function sanitizeRunHistoriesForCache(runHistories) {
+    return Object.fromEntries(Object.entries(runHistories || {}).map(([taskID, runs]) => [
+        taskID,
+        Array.isArray(runs) ? runs.map(sanitizeRunForCache) : []
+    ]));
+}
+
+function sanitizeRunForCache(run) {
+    if (!run || typeof run !== 'object') return run;
+    const outcome = run.outcome || {};
+    const parsed = outcome.parsedResult ? {
+        status: outcome.parsedResult.status || '',
+        summary: outcome.parsedResult.summary || ''
+    } : undefined;
+    const sanitized = {
+        id: run.id,
+        taskID: run.taskID,
+        trigger: run.trigger,
+        startedAt: run.startedAt,
+        finishedAt: run.finishedAt,
+        deliveryResults: Array.isArray(run.deliveryResults) ? cloneJSON(run.deliveryResults) : [],
+        outcome: {
+            exitCode: outcome.exitCode,
+            timedOut: !!outcome.timedOut,
+            durationMs: outcome.durationMs || 0
+        }
+    };
+    if (parsed) {
+        sanitized.outcome.parsedResult = parsed;
+    }
+    return sanitized;
+}
+
+function cloneJSON(value) {
+    if (value === undefined || value === null) return value;
+    return JSON.parse(JSON.stringify(value));
 }
 
 function esc(s) {

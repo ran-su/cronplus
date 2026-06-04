@@ -50,7 +50,11 @@ func (c *captureTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 }
 
 func testTelegramDriver(response string) (*TelegramDriver, *captureTransport) {
-	transport := &captureTransport{status: http.StatusOK, response: response}
+	return testTelegramDriverWithStatus(http.StatusOK, response)
+}
+
+func testTelegramDriverWithStatus(status int, response string) (*TelegramDriver, *captureTransport) {
+	transport := &captureTransport{status: status, response: response}
 	driver := NewTelegramDriver()
 	driver.apiBase = "https://telegram.test"
 	driver.client = &http.Client{Transport: transport}
@@ -137,6 +141,18 @@ func TestAnswerCallbackQueryPostsAcknowledgement(t *testing.T) {
 	}
 }
 
+func TestSendReplyReturnsTelegramOKFalse(t *testing.T) {
+	driver, _ := testTelegramDriver(`{"ok":false,"error_code":400,"description":"Bad Request: message text is empty"}`)
+
+	err := driver.SendReply("token", "123", "hello")
+	if err == nil {
+		t.Fatal("SendReply error is nil, want Telegram ok=false error")
+	}
+	if !strings.Contains(err.Error(), "Bad Request: message text is empty") {
+		t.Fatalf("SendReply error = %q, want Telegram description", err.Error())
+	}
+}
+
 func TestGetUpdatesUsesConfiguredAPIBase(t *testing.T) {
 	driver, transport := testTelegramDriver(`{"ok":true,"result":[{"update_id":42,"message":{"chat":{"id":123,"type":"private"},"text":"/status","date":1717286400}}]}`)
 
@@ -179,23 +195,18 @@ func TestGetUpdatesDecodesCallbackQuery(t *testing.T) {
 	}
 }
 
-func TestSetCommandMenuPostsTelegramCommands(t *testing.T) {
+func TestDeleteCommandMenuPostsTelegramCleanup(t *testing.T) {
 	driver, transport := testTelegramDriver(`{"ok":true}`)
 
-	if err := driver.SetCommandMenu("token"); err != nil {
-		t.Fatalf("SetCommandMenu: %v", err)
+	if err := driver.DeleteCommandMenu("token"); err != nil {
+		t.Fatalf("DeleteCommandMenu: %v", err)
 	}
 
 	call := transport.calls[0]
-	if call.Path != "/bottoken/setMyCommands" {
-		t.Fatalf("request path = %q, want /bottoken/setMyCommands", call.Path)
+	if call.Path != "/bottoken/deleteMyCommands" {
+		t.Fatalf("request path = %q, want /bottoken/deleteMyCommands", call.Path)
 	}
-	commands := call.Body["commands"].([]any)
-	if len(commands) < 3 {
-		t.Fatalf("commands = %+v, want command menu entries", commands)
-	}
-	first := commands[0].(map[string]any)
-	if first["command"] != "status" {
-		t.Fatalf("first command = %+v, want status", first)
+	if len(call.Body) != 0 {
+		t.Fatalf("body = %+v, want empty cleanup request", call.Body)
 	}
 }

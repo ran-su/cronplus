@@ -613,7 +613,19 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     margin-bottom: 32px;
 }
 
-.detail-header h1 { font-size: 28px; letter-spacing: 0; }
+.detail-header h1 { font-size: 28px; letter-spacing: 0; overflow-wrap: anywhere; }
+.detail-actions {
+    margin-left: auto;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    min-width: 0;
+}
+.detail-actions .btn {
+    white-space: nowrap;
+}
 .detail-header .back-link {
     display: inline-flex;
     align-items: center;
@@ -926,6 +938,15 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     .check-grid { grid-template-columns: 1fr; }
     .check-header, .diagnosis-header { flex-direction: column; }
     .inline-state { flex-direction: column; align-items: flex-start; }
+    .detail-actions {
+        flex-basis: 100%;
+        margin-left: 0;
+        justify-content: flex-start;
+        gap: 8px;
+    }
+    .detail-actions .btn {
+        padding: 8px 12px;
+    }
 }
 
 /* ===== Toast Notifications ===== */

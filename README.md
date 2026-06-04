@@ -213,7 +213,7 @@ curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
 
 Enable inbound commands on a Telegram delivery profile, then send:
 
-CronPlus configures Telegram's command menu and adds contextual inline buttons to related responses, such as task run/last actions under `/list` and task-specific replies.
+CronPlus clears Telegram's command menu and only adds contextual inline buttons to related responses, such as task run/last actions under `/list` and task-specific replies.
 
 | Command | Description |
 |---|---|

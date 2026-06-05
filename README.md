@@ -150,6 +150,9 @@ cronplus import /path/to/my-task
 cronplus reload <task-id>
 cronplus run <task-id>
 
+# Serve MCP over stdio for MCP-capable AI clients
+cronplus mcp
+
 # Manage macOS autostart
 cronplus autostart install
 cronplus autostart status
@@ -159,6 +162,47 @@ cronplus autostart uninstall
 The machine-readable schema is also available in `schemas/manifest.schema.json`.
 
 Daemon API commands use `CRONPLUS_PORT` when it is set. Otherwise they read the active port from `~/.config/cronplus/daemon.lock`, then fall back to `9876`.
+
+## MCP
+
+CronPlus includes a local MCP server for AI clients that support the Model Context Protocol:
+
+```json
+{
+  "mcpServers": {
+    "cronplus": {
+      "command": "/absolute/path/to/cronplus",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Run the CronPlus daemon first with `cronplus` or `./cronplus`. The MCP command is a separate stdio adapter process launched by the AI client; it does not start a second daemon, scheduler, or `core.Engine`.
+
+```
+AI client
+  -> cronplus mcp
+      -> local REST API + auth token
+          -> running cronplus daemon
+              -> core.Engine and scheduler
+```
+
+`cronplus mcp` resolves the daemon using the same rules as daemon CLI commands: `CRONPLUS_PORT`, then `~/.config/cronplus/daemon.lock`, then `127.0.0.1:9876`. It reads the bearer token from `~/.config/cronplus/auth-token`.
+
+MCP tools include:
+
+| Tool | Purpose |
+|---|---|
+| `cronplus.status` | Read daemon status |
+| `cronplus.tasks.list` / `cronplus.tasks.get` | Inspect imported tasks |
+| `cronplus.task_package.validate` | Validate a task manifest without running code |
+| `cronplus.task_package.check` | Validate, prepare the environment, and run the script once |
+| `cronplus.tasks.import` / `reload` / `set_enabled` / `remove` | Manage imported tasks |
+| `cronplus.runs.start` / `get` / `wait` | Start and inspect manual runs |
+| `cronplus.deliveries.test` | Send a test message through an existing delivery profile |
+
+MCP resources include `cronplus://status`, `cronplus://tasks`, task/run resource templates, the manifest schema, and the task-authoring guide. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
 
 ## Features
 
@@ -170,6 +214,7 @@ Daemon API commands use `CRONPLUS_PORT` when it is set. Otherwise they read the 
 | **Delivery** | Telegram (more drivers planned) |
 | **Inbound Commands** | Control CronPlus via Telegram messages |
 | **Contract Checks** | CLI validation and run checks for AI-authored packages |
+| **MCP** | Local stdio MCP adapter for AI clients |
 | **Autostart** | macOS LaunchAgent install/status/uninstall command |
 | **Persistence** | JSON file at `~/.config/cronplus/state.json` |
 | **Auth** | Token file, auto-auth for localhost |
@@ -193,6 +238,7 @@ curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
 # Trigger a run
 curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
   http://127.0.0.1:9876/api/tasks/{id}/run
+# Response includes {"taskID":"...","runID":"...","status":"started"}
 
 # Reload a task manifest after editing files on disk
 curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \

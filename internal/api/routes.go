@@ -192,14 +192,19 @@ func handleCheckTaskPackage(engine *core.Engine) http.HandlerFunc {
 func handleImportTask(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
-			Path string `json:"path"`
+			Path    string `json:"path"`
+			Enabled *bool  `json:"enabled,omitempty"`
 		}
 		if err := readJSON(r, &body); err != nil || body.Path == "" {
 			writeError(w, http.StatusBadRequest, "invalid_request", "Request body must include 'path'.")
 			return
 		}
 
-		task, err := engine.ImportTask(body.Path, true)
+		enabled := true
+		if body.Enabled != nil {
+			enabled = *body.Enabled
+		}
+		task, err := engine.ImportTask(body.Path, enabled)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, "import_failed", err.Error())
 			return
@@ -267,7 +272,8 @@ func handleCheckImportedTask(engine *core.Engine) http.HandlerFunc {
 func handleRunTask(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := engine.StartTaskRun(id, "manual"); err != nil {
+		runID, err := engine.StartTaskRunWithID(id, "manual")
+		if err != nil {
 			if strings.Contains(err.Error(), "not found") {
 				writeError(w, http.StatusNotFound, "task_not_found", "No task with ID "+id)
 				return
@@ -282,6 +288,7 @@ func handleRunTask(engine *core.Engine) http.HandlerFunc {
 
 		writeJSON(w, http.StatusAccepted, map[string]string{
 			"taskID": id,
+			"runID":  runID,
 			"status": "started",
 		})
 	}

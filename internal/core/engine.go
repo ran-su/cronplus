@@ -358,17 +358,26 @@ func (e *Engine) RunTask(taskID, trigger string) (*models.RunRecord, error) {
 
 // StartTaskRun reserves and starts a task run in the background.
 func (e *Engine) StartTaskRun(taskID, trigger string) error {
+	_, err := e.StartTaskRunWithID(taskID, trigger)
+	return err
+}
+
+// StartTaskRunWithID reserves and starts a task run in the background, returning
+// the run ID immediately so API clients can poll for the completed record.
+func (e *Engine) StartTaskRunWithID(taskID, trigger string) (string, error) {
 	reserved, err := e.reserveTaskRun(taskID, trigger)
 	if err != nil {
-		return err
+		return "", err
 	}
 	go e.executeReservedRun(reserved, trigger)
-	return nil
+	return reserved.runID, nil
 }
 
 type reservedTaskRun struct {
 	task       *models.Task
 	generation int64
+	runID      string
+	startedAt  time.Time
 }
 
 func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error) {
@@ -403,22 +412,25 @@ func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error
 		e.taskGenerations[taskID] = generation
 	}
 	taskSnapshot := cloneTask(task)
+	runID := generateID()
+	startedAt := time.Now()
 	e.mu.Unlock()
 
 	e.Broker.Publish("run_started", map[string]string{
 		"taskID":  taskID,
 		"trigger": trigger,
+		"runID":   runID,
 	})
 
-	return &reservedTaskRun{task: taskSnapshot, generation: generation}, nil
+	return &reservedTaskRun{task: taskSnapshot, generation: generation, runID: runID, startedAt: startedAt}, nil
 }
 
 func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *models.RunRecord {
 	task := reserved.task
 	taskID := task.ID
 	manifestDir := filepath.Dir(task.ManifestPath)
-	startedAt := time.Now()
-	runID := generateID()
+	startedAt := reserved.startedAt
+	runID := reserved.runID
 
 	// Run the script (this blocks — called in a goroutine by the scheduler/API)
 	outcome := RunScriptWithOptions(task.Manifest, manifestDir, RunScriptOptions{

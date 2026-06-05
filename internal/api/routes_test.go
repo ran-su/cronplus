@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/ran-su/cronplus/internal/core"
 	"github.com/ran-su/cronplus/internal/models"
@@ -201,6 +202,48 @@ func TestCheckTaskPackageEndpoint(t *testing.T) {
 	}
 	if len(response.NextRuns) == 0 {
 		t.Fatalf("nextRuns empty in response: %+v", response)
+	}
+}
+
+func TestRunTaskEndpointReturnsRunID(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := writeAPITaskPackage(t, "print('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ran\"}')\n", python, "")
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/run", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusAccepted, rec.Body.String())
+	}
+	var response struct {
+		TaskID string `json:"taskID"`
+		RunID  string `json:"runID"`
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.TaskID != task.ID || response.RunID == "" || response.Status != "started" {
+		t.Fatalf("response = %+v, want task id, run id, started", response)
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for engine.IsRunning(task.ID) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if engine.IsRunning(task.ID) {
+		t.Fatal("task still running after deadline")
 	}
 }
 

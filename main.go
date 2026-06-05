@@ -20,9 +20,11 @@ import (
 
 	"github.com/ran-su/cronplus/internal/api"
 	"github.com/ran-su/cronplus/internal/core"
+	"github.com/ran-su/cronplus/internal/daemonclient"
 	"github.com/ran-su/cronplus/internal/delivery"
 	"github.com/ran-su/cronplus/internal/inbound"
 	"github.com/ran-su/cronplus/internal/manifest"
+	"github.com/ran-su/cronplus/internal/mcp"
 	"github.com/ran-su/cronplus/internal/models"
 	"github.com/ran-su/cronplus/internal/store"
 )
@@ -195,6 +197,8 @@ func runCLICommand(args []string) (bool, int) {
 		return true, 0
 	case "autostart":
 		return true, cliAutostart(args[1:])
+	case "mcp":
+		return true, cliMCP(args[1:])
 	case "status", "list":
 		return true, cliAPI(args[0], "", nil)
 	case "import":
@@ -212,6 +216,31 @@ func runCLICommand(args []string) (bool, int) {
 	default:
 		return false, 0
 	}
+}
+
+func cliMCP(args []string) int {
+	if len(args) > 0 {
+		fmt.Fprintln(os.Stderr, "usage: cronplus mcp")
+		return 2
+	}
+
+	baseURL, err := daemonclient.DefaultBaseURL()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mcp config: %v\n", err)
+		return 1
+	}
+	token, err := daemonclient.ReadDefaultToken()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "mcp auth warning: %v\n", err)
+	}
+
+	client := daemonclient.New(baseURL, token)
+	server := mcp.NewServer(client, version)
+	if err := server.Run(context.Background(), os.Stdin, os.Stdout); err != nil {
+		fmt.Fprintf(os.Stderr, "mcp server: %v\n", err)
+		return 1
+	}
+	return 0
 }
 
 func cliValidate(dir string) int {

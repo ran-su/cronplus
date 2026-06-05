@@ -80,6 +80,7 @@ cronplus (single Go binary)
 ├── Persistence — JSON file (~/.config/cronplus/state.json)
 ├── REST API — net/http
 ├── SSE — real-time push to web UI
+├── MCP stdio adapter — `cronplus mcp`, calls the running daemon over REST
 └── Web UI — embedded via go:embed
 ```
 
@@ -96,6 +97,7 @@ cronplus (single Go binary)
 9. **Resource Cleanup**: Each run uses its own process group and per-run temp/profile/cache directory. CronPlus kills leftover process-group members, scans for detached processes referencing the run directory, and removes run artifacts.
 10. **Diagnostics**: Runs record Python executable, script path, working directory, timeout, process IDs, output bytes/discards, run directory, cleanup results, and structured-result detection.
 11. **Contract Checks**: CLI validation, schema output, and one-shot run checks help AI agents produce valid task packages before import.
+12. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`.
 
 ## Distribution
 

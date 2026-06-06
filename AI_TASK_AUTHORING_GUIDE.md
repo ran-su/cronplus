@@ -85,7 +85,7 @@ Write ordinary logs to stdout/stderr. At the end, print at most one final struct
 print("CRONPLUS_RESULT=" + json.dumps(result, separators=(",", ":")))
 ```
 
-CronPlus scans stdout for the last line beginning with the configured prefix. Invalid JSON is ignored. Unknown result statuses become `failure`.
+CronPlus scans stdout for the last line beginning with the configured prefix. If CronPlus can parse the structured result and its `status` is valid, that status is authoritative for run state and delivery matching, even if the process exits non-zero. Invalid JSON is ignored. Unknown result statuses become `failure`.
 
 Use `status` for CronPlus run state. Add any other JSON fields the task needs for UI/API output or delivery templates:
 
@@ -105,8 +105,9 @@ Status rules:
 - Use `failure` when the task could not complete or detected a critical problem.
 - Use `warning` when the task completed but found a non-critical issue.
 - Use `skipped` when the task intentionally did no work.
-- Use exit code `0` for `success`, `warning`, and intentional `skipped`.
-- Use non-zero exit code for true execution failures.
+- Prefer exit code `0` for `success`, `warning`, and intentional `skipped`.
+- Prefer non-zero exit code for true execution failures.
+- If the final structured result is missing or invalid JSON, CronPlus uses the exit code as the run state.
 
 Keep fields concise enough for local storage and delivery. Avoid putting huge payloads in the structured result.
 

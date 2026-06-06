@@ -45,6 +45,44 @@ func TestDiagnoseOutcomeRequiredStructuredResult(t *testing.T) {
 	}
 }
 
+func TestDiagnoseOutcomeUsesParsedStatusOverExitCode(t *testing.T) {
+	diagnosis := DiagnoseOutcome(models.RunOutcome{
+		ExitCode: 1,
+		Stderr:   "ignored because structured result is authoritative",
+		ParsedResult: &models.ParsedResult{
+			Status:  "success",
+			Summary: "structured success",
+		},
+		Diagnostics: models.RunDiagnostics{
+			StructuredResultFound: true,
+		},
+	}, nil, false)
+
+	if diagnosis.Status != "success" {
+		t.Fatalf("status = %q, want success from parsed result", diagnosis.Status)
+	}
+	if diagnosis.Summary != "structured success" {
+		t.Fatalf("summary = %q, want parsed summary", diagnosis.Summary)
+	}
+}
+
+func TestDiagnoseOutcomeUsesExitCodeWhenStructuredResultMissing(t *testing.T) {
+	diagnosis := DiagnoseOutcome(models.RunOutcome{
+		ExitCode: 1,
+		Stderr:   "boom",
+		Diagnostics: models.RunDiagnostics{
+			StructuredResultFound: false,
+		},
+	}, nil, false)
+
+	if diagnosis.Status != "failure" {
+		t.Fatalf("status = %q, want failure from exit code", diagnosis.Status)
+	}
+	if !strings.Contains(diagnosis.Summary, "code 1") {
+		t.Fatalf("summary = %q, want exit-code diagnostic", diagnosis.Summary)
+	}
+}
+
 func TestCheckTaskPackageRunsOneShotCheck(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

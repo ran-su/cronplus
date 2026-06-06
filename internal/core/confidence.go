@@ -158,16 +158,6 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 		return diagnosis
 	}
 
-	if outcome.ExitCode != 0 {
-		diagnosis.Status = "failure"
-		diagnosis.Summary = fmt.Sprintf("The script exited with code %d.", outcome.ExitCode)
-		if tail := firstUsefulLine(outcome.Stderr); tail != "" {
-			diagnosis.Causes = append(diagnosis.Causes, tail)
-		}
-		diagnosis.Actions = append(diagnosis.Actions, "Open STDERR and fix the script error, missing file, or dependency problem.")
-		return diagnosis
-	}
-
 	if expectStructured && !outcome.Diagnostics.StructuredResultFound {
 		diagnosis.Status = "failure"
 		diagnosis.Summary = "The script finished, but did not print the required structured result."
@@ -186,6 +176,15 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 			diagnosis.Actions = append(diagnosis.Actions, "Review the structured result and script logs for the reported failure.")
 		}
 	} else {
+		if outcome.ExitCode != 0 {
+			diagnosis.Status = "failure"
+			diagnosis.Summary = fmt.Sprintf("The script exited with code %d.", outcome.ExitCode)
+			if tail := firstUsefulLine(outcome.Stderr); tail != "" {
+				diagnosis.Causes = append(diagnosis.Causes, tail)
+			}
+			diagnosis.Actions = append(diagnosis.Actions, "Open STDERR and fix the script error, missing file, or dependency problem.")
+			return diagnosis
+		}
 		diagnosis.Summary = "The script completed successfully."
 		if !outcome.Diagnostics.StructuredResultFound {
 			diagnosis.Causes = append(diagnosis.Causes, "No structured result was printed, so CronPlus used the exit code.")

@@ -116,7 +116,7 @@ result = {
 print(f"CRONPLUS_RESULT={json.dumps(result)}")
 ```
 
-Supported statuses are `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`. Unknown structured result statuses are treated as `failure`. If no structured status is present, CronPlus falls back to the script exit code.
+Supported statuses are `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`. When CronPlus can parse a structured result with a valid status, that status is authoritative for run state and delivery matching, even if the process exits non-zero. Unknown structured result statuses are treated as `failure`. If there is no parseable structured result, CronPlus falls back to the script exit code.
 
 ### Task Lifecycle
 

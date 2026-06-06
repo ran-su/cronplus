@@ -25,6 +25,16 @@ func TestRunStatusFromOutcomeUsesValidParsedStatus(t *testing.T) {
 	}
 }
 
+func TestRunStatusFromOutcomeUsesValidParsedStatusOverExitCode(t *testing.T) {
+	status := RunStatusFromOutcome(RunOutcome{
+		ExitCode:     1,
+		ParsedResult: &ParsedResult{Status: "success"},
+	})
+	if status != "success" {
+		t.Fatalf("status = %q, want success from parsed result", status)
+	}
+}
+
 func TestParsedResultJSONPreservesArbitraryFields(t *testing.T) {
 	var result ParsedResult
 	if err := json.Unmarshal([]byte(`{"status":"success","message":"hello","deliverable":{"body":"nested","extra":"kept"}}`), &result); err != nil {

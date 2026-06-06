@@ -15,10 +15,11 @@ CRONPLUS_RESULT={"status":"success","message":"3 items found","details":{"count"
 1. Normal log output can be printed freely to stdout/stderr.
 2. CronPlus scans stdout for the **last** line starting with `CRONPLUS_RESULT=`.
 3. The JSON after the prefix is parsed as structured output.
-4. If missing, CronPlus records the run using exit code + raw logs only.
-5. If the JSON is invalid, the structured result is ignored.
-6. If `status` is present but unknown, CronPlus changes it to `failure` and adds an invalid-status diagnostic to the summary.
-7. Fields other than `status` are task-defined and are passed through for UI/API storage and delivery templates.
+4. If the structured result is parseable and contains a valid `status`, CronPlus uses that status as the run state, even when the process exits non-zero.
+5. If missing, CronPlus records the run using exit code + raw logs only.
+6. If the JSON is invalid, the structured result is ignored.
+7. If `status` is present but unknown, CronPlus changes it to `failure` and adds an invalid-status diagnostic to the summary.
+8. Fields other than `status` are task-defined and are passed through for UI/API storage and delivery templates.
 
 ## Result Schema
 
@@ -36,7 +37,7 @@ CRONPLUS_RESULT={"status":"success","message":"3 items found","details":{"count"
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `status` | string | Yes | `"success"`, `"failure"`, `"warning"`, `"skipped"` (`"failed"` is accepted as a compatibility alias for `"failure"`). CronPlus uses this field for run state and `delivery.send_on` matching. |
+| `status` | string | Yes | `"success"`, `"failure"`, `"warning"`, `"skipped"` (`"failed"` is accepted as a compatibility alias for `"failure"`). CronPlus uses this field for run state and `delivery.send_on` matching when the structured result is parseable. If no parseable structured result is available, CronPlus uses the process exit code instead. |
 | any other field | any JSON value | No | Task-defined data. CronPlus stores it and makes it available to delivery templates without prescribing its shape. |
 
 ## Delivery Message Flow

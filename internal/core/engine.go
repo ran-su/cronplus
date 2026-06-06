@@ -194,7 +194,12 @@ func (e *Engine) ReloadTask(taskID string) (*models.Task, error) {
 }
 
 func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, createdAt time.Time) (*models.Task, error) {
-	manifestPath, err := manifest.FindManifest(dirPath)
+	packageDir, err := canonicalPackageDir(dirPath)
+	if err != nil {
+		return nil, err
+	}
+
+	manifestPath, err := manifest.FindManifest(packageDir)
 	if err != nil {
 		return nil, err
 	}
@@ -233,7 +238,7 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 
 	displayName := m.Script.Name
 	if displayName == "" {
-		displayName = filepath.Base(dirPath)
+		displayName = filepath.Base(packageDir)
 	}
 
 	e.mu.Lock()
@@ -241,7 +246,7 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 
 	// Check for existing task with same package dir
 	for i, t := range e.tasks {
-		if t.PackageDir == dirPath {
+		if t.PackageDir == packageDir {
 			if restoredID != "" {
 				e.tasks[i].ID = restoredID
 			}
@@ -272,7 +277,7 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 
 	task := &models.Task{
 		ID:              id,
-		PackageDir:      dirPath,
+		PackageDir:      packageDir,
 		ManifestPath:    manifestPath,
 		Manifest:        m,
 		Enabled:         enabled,
@@ -830,10 +835,23 @@ func (e *Engine) mergeInlineProfiles(m *models.ScriptManifest) bool {
 			Enabled:    true,
 			Config:     cloneStringMap(inline.Config),
 		})
+		existingIDs[inline.ID] = true
 		changed = true
 		log.Printf("[CronPlus] Imported inline delivery profile '%s' (id: %s).", name, inline.ID)
 	}
 	return changed
+}
+
+func canonicalPackageDir(dirPath string) (string, error) {
+	abs, err := filepath.Abs(dirPath)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve package directory %s: %w", dirPath, err)
+	}
+	canonical, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", fmt.Errorf("cannot resolve package directory %s: %w", dirPath, err)
+	}
+	return canonical, nil
 }
 
 func (e *Engine) notifyDeliveryProfilesChanged() {

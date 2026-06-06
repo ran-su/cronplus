@@ -106,11 +106,22 @@ func validate(m *models.ScriptManifest, dir string) []ValidationIssue {
 		})
 	} else {
 		resolved := resolvePath(dir, m.Script.Path)
-		if _, err := os.Stat(resolved); os.IsNotExist(err) {
+		info, err := os.Stat(resolved)
+		if err != nil {
+			message := fmt.Sprintf("File not found: %s", resolved)
+			if !os.IsNotExist(err) {
+				message = fmt.Sprintf("Cannot inspect file: %s: %v", resolved, err)
+			}
 			issues = append(issues, ValidationIssue{
 				Severity: "error",
 				Path:     "script.path",
-				Message:  fmt.Sprintf("File not found: %s", resolved),
+				Message:  message,
+			})
+		} else if info.IsDir() || !info.Mode().IsRegular() {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     "script.path",
+				Message:  fmt.Sprintf("Must be a regular file: %s", resolved),
 			})
 		}
 	}
@@ -220,6 +231,27 @@ func validate(m *models.ScriptManifest, dir string) []ValidationIssue {
 			Message:  "Must be greater than or equal to 0.",
 		})
 	}
+	if m.Runtime.WorkingDir != "" && m.Runtime.WorkingDir != "." {
+		resolved := resolvePath(dir, m.Runtime.WorkingDir)
+		info, err := os.Stat(resolved)
+		if err != nil {
+			message := fmt.Sprintf("Directory not found: %s", resolved)
+			if !os.IsNotExist(err) {
+				message = fmt.Sprintf("Cannot inspect directory: %s: %v", resolved, err)
+			}
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     "runtime.working_directory",
+				Message:  message,
+			})
+		} else if !info.IsDir() {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     "runtime.working_directory",
+				Message:  fmt.Sprintf("Must be a directory: %s", resolved),
+			})
+		}
+	}
 	if m.Runtime.Environment.Strategy == "venv_path" && m.Runtime.Environment.VenvPath == "" {
 		issues = append(issues, ValidationIssue{
 			Severity: "error",
@@ -270,10 +302,19 @@ func validate(m *models.ScriptManifest, dir string) []ValidationIssue {
 	}
 
 	// Inline delivery profiles
+	seenInlineProfileIDs := make(map[string]int)
 	for i, p := range m.Delivery.InlineProfiles {
 		path := fmt.Sprintf("delivery.inline_profiles[%d]", i)
 		if p.ID == "" {
 			issues = append(issues, ValidationIssue{Severity: "error", Path: path + ".id", Message: "Required."})
+		} else if first, ok := seenInlineProfileIDs[p.ID]; ok {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     path + ".id",
+				Message:  fmt.Sprintf("Duplicate inline profile id %q; first used at delivery.inline_profiles[%d].id.", p.ID, first),
+			})
+		} else {
+			seenInlineProfileIDs[p.ID] = i
 		}
 		if p.Driver == "" {
 			issues = append(issues, ValidationIssue{Severity: "error", Path: path + ".driver", Message: "Required."})

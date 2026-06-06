@@ -120,6 +120,94 @@ schedule:
 	}
 }
 
+func TestLoad_ScriptPathMustBeRegularFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "script.py"), 0755); err != nil {
+		t.Fatalf("create script directory: %v", err)
+	}
+
+	manifestContent := `
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Directory Script
+schedule:
+  expression: "0 * * * *"
+`
+	manifestPath := filepath.Join(dir, "test.cronplus.yaml")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	result, err := Load(manifestPath)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if !result.HasErrors() {
+		t.Fatal("should have errors for directory script path")
+	}
+	assertIssuePath(t, result.Issues, "script.path")
+}
+
+func TestLoad_InvalidWorkingDirectory(t *testing.T) {
+	tests := []struct {
+		name       string
+		workingDir string
+		setup      func(t *testing.T, dir string)
+	}{
+		{
+			name:       "missing",
+			workingDir: "./missing",
+		},
+		{
+			name:       "file",
+			workingDir: "./not-a-dir",
+			setup: func(t *testing.T, dir string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(dir, "not-a-dir"), []byte("not a directory\n"), 0644); err != nil {
+					t.Fatalf("write working directory file: %v", err)
+				}
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("pass\n"), 0644); err != nil {
+				t.Fatalf("write script: %v", err)
+			}
+			if tt.setup != nil {
+				tt.setup(t, dir)
+			}
+
+			manifestContent := `
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Bad Working Directory
+runtime:
+  working_directory: ` + tt.workingDir + `
+schedule:
+  expression: "0 * * * *"
+`
+			manifestPath := filepath.Join(dir, "test.cronplus.yaml")
+			if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+				t.Fatalf("write manifest: %v", err)
+			}
+
+			result, err := Load(manifestPath)
+			if err != nil {
+				t.Fatalf("Load error: %v", err)
+			}
+			if !result.HasErrors() {
+				t.Fatal("should have errors for invalid working directory")
+			}
+			assertIssuePath(t, result.Issues, "runtime.working_directory")
+		})
+	}
+}
+
 func TestLoad_InvalidSchedule(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "script.py")
@@ -307,6 +395,43 @@ schedule:
 		t.Fatal("should have errors for invalid resource limit")
 	}
 	assertIssuePath(t, result.Issues, "runtime.resource_limits.graceful_kill_seconds")
+}
+
+func TestLoad_DuplicateInlineDeliveryProfileID(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("pass\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	manifestContent := `
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Duplicate Inline Profile
+schedule:
+  expression: "0 * * * *"
+delivery:
+  inline_profiles:
+    - id: telegram
+      name: Primary Telegram
+      driver: telegram
+    - id: telegram
+      name: Duplicate Telegram
+      driver: telegram
+`
+	manifestPath := filepath.Join(dir, "test.cronplus.yaml")
+	if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	result, err := Load(manifestPath)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if !result.HasErrors() {
+		t.Fatal("should have errors for duplicate inline delivery profile IDs")
+	}
+	assertIssuePath(t, result.Issues, "delivery.inline_profiles[1].id")
 }
 
 func assertIssuePath(t *testing.T, issues []ValidationIssue, path string) {

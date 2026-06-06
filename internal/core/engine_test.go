@@ -94,6 +94,60 @@ schedule:
 	}
 }
 
+func TestImportTaskCanonicalizesPackageDirAndDeduplicates(t *testing.T) {
+	dir := writeTaskPackage(t, "print('ok')\n", "")
+	canonicalDir, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		t.Fatalf("canonical task dir: %v", err)
+	}
+	parent := filepath.Dir(dir)
+	relativeDir, err := filepath.Rel(parent, dir)
+	if err != nil {
+		t.Fatalf("relative task dir: %v", err)
+	}
+
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	t.Chdir(parent)
+
+	task, err := engine.ImportTask(relativeDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask relative path: %v", err)
+	}
+	if task.PackageDir != canonicalDir {
+		t.Fatalf("PackageDir = %q, want %q", task.PackageDir, canonicalDir)
+	}
+
+	updated, err := engine.ImportTask(dir, false)
+	if err != nil {
+		t.Fatalf("ImportTask absolute path: %v", err)
+	}
+	if updated.ID != task.ID {
+		t.Fatalf("duplicate import ID = %q, want %q", updated.ID, task.ID)
+	}
+	if updated.Enabled {
+		t.Fatal("duplicate import should update the existing task")
+	}
+	if tasks := engine.Tasks(); len(tasks) != 1 {
+		t.Fatalf("tasks len = %d, want 1", len(tasks))
+	}
+
+	linkDir := filepath.Join(t.TempDir(), "task-link")
+	if err := os.Symlink(dir, linkDir); err != nil {
+		t.Logf("skipping symlink import assertion: %v", err)
+		return
+	}
+	linked, err := engine.ImportTask(linkDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask symlink path: %v", err)
+	}
+	if linked.ID != task.ID {
+		t.Fatalf("symlink import ID = %q, want %q", linked.ID, task.ID)
+	}
+	if tasks := engine.Tasks(); len(tasks) != 1 {
+		t.Fatalf("tasks len after symlink import = %d, want 1", len(tasks))
+	}
+}
+
 func TestImportTaskFailsWhenEnvironmentSetupFails(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("print('ok')\n"), 0644); err != nil {

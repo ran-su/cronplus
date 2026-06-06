@@ -25,7 +25,7 @@ Three-step flow:
 | Login screen | n/a | Token input shown when auto-auth/localStorage token fails |
 | Dashboard | `/` | Task counts, next run, recent failures, task cards |
 | Tasks | `/tasks` | Task list with status, enable/disable, run buttons |
-| Task Detail | `/tasks/:id` | Manifest status, timeline, schedule, run history table, run/reload/remove-import/preview actions |
+| Task Detail | `/tasks/:id` | Manifest status, environment setup status, timeline, schedule, run history table, run/reload/remove-import/preview actions |
 | Run Detail | `/tasks/:id/runs/:runId` | stdout, stderr, parsed result, run diagnostics, resource cleanup, delivery outcomes |
 | Delivery | `/delivery` | Profile list, create/test/delete |
 | Commands | `/commands` | Inbound command log |

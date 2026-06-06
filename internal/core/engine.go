@@ -20,20 +20,23 @@ import (
 
 // Engine is the central state owner for the daemon.
 type Engine struct {
-	mu               sync.RWMutex
-	tasks            []*models.Task
-	deliveryProfiles []models.DeliveryProfile
-	runHistory       map[string][]models.RunRecord
-	activeRuns       map[string]bool
-	activeRunDetails map[string]models.ActiveRunInfo
-	taskGenerations  map[string]int64
-	commandLog       []models.CommandRecord
+	mu                  sync.RWMutex
+	tasks               []*models.Task
+	deliveryProfiles    []models.DeliveryProfile
+	runHistory          map[string][]models.RunRecord
+	activeRuns          map[string]bool
+	activeRunDetails    map[string]models.ActiveRunInfo
+	taskGenerations     map[string]int64 // Invalidates active runs after removal.
+	envSetupGenerations map[string]int64 // Invalidates stale environment setup workers.
+	envSetupLocks       map[string]*sync.Mutex
+	commandLog          []models.CommandRecord
 
-	store           *store.Store
-	scheduler       *Scheduler
-	Broker          *EventBroker
-	DeliveryService *delivery.Service
-	settings        store.Settings
+	store                *store.Store
+	scheduler            *Scheduler
+	Broker               *EventBroker
+	DeliveryService      *delivery.Service
+	settings             store.Settings
+	environmentSetupFunc func(*models.ScriptManifest, string) error
 
 	maxRunsPerTask    int
 	maxConcurrentRuns int
@@ -45,16 +48,19 @@ type Engine struct {
 // NewEngine creates a new engine with the given store and delivery service.
 func NewEngine(s *store.Store, deliverySvc *delivery.Service) *Engine {
 	return &Engine{
-		runHistory:        make(map[string][]models.RunRecord),
-		activeRuns:        make(map[string]bool),
-		activeRunDetails:  make(map[string]models.ActiveRunInfo),
-		taskGenerations:   make(map[string]int64),
-		store:             s,
-		Broker:            NewEventBroker(),
-		DeliveryService:   deliverySvc,
-		settings:          store.Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
-		maxRunsPerTask:    50,
-		maxConcurrentRuns: 2,
+		runHistory:           make(map[string][]models.RunRecord),
+		activeRuns:           make(map[string]bool),
+		activeRunDetails:     make(map[string]models.ActiveRunInfo),
+		taskGenerations:      make(map[string]int64),
+		envSetupGenerations:  make(map[string]int64),
+		envSetupLocks:        make(map[string]*sync.Mutex),
+		store:                s,
+		Broker:               NewEventBroker(),
+		DeliveryService:      deliverySvc,
+		settings:             store.Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
+		environmentSetupFunc: EnsureEnvironment,
+		maxRunsPerTask:       50,
+		maxConcurrentRuns:    2,
 	}
 }
 
@@ -188,7 +194,7 @@ func (e *Engine) ReloadTask(taskID string) (*models.Task, error) {
 	e.mu.RUnlock()
 
 	if packageDir == "" {
-		return nil, fmt.Errorf("task not found: %s", taskID)
+		return nil, taskNotFoundError(taskID)
 	}
 	return e.importTask(packageDir, enabled, taskID, createdAt)
 }
@@ -213,7 +219,7 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 		for i, issue := range result.Issues {
 			msgs[i] = fmt.Sprintf("[%s] %s: %s", issue.Severity, issue.Path, issue.Message)
 		}
-		return nil, fmt.Errorf("manifest validation failed:\n%s", joinLines(msgs))
+		return nil, &ManifestValidationError{Details: joinLines(msgs)}
 	}
 
 	m := result.Manifest
@@ -225,11 +231,8 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 	if createdAt.IsZero() {
 		createdAt = now
 	}
-
-	// Ensure environment is ready
-	if err := EnsureEnvironment(m, filepath.Dir(manifestPath)); err != nil {
-		return nil, fmt.Errorf("environment setup failed for %s: %w", m.Script.Name, err)
-	}
+	manifestDir := filepath.Dir(manifestPath)
+	envSetup := initialEnvironmentSetup(m)
 
 	profilesChanged := e.mergeInlineProfiles(m)
 	if profilesChanged {
@@ -242,7 +245,6 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 	}
 
 	e.mu.Lock()
-	defer e.mu.Unlock()
 
 	// Check for existing task with same package dir
 	for i, t := range e.tasks {
@@ -258,14 +260,20 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 			e.tasks[i].LastReloadedAt = now
 			e.tasks[i].ManifestHash = manifestHash
 			e.tasks[i].ManifestModTime = manifestModTime
+			e.tasks[i].EnvironmentSetup = envSetup
 			if e.taskGenerations[e.tasks[i].ID] == 0 {
 				e.taskGenerations[e.tasks[i].ID] = 1
 			}
 			taskCopy := cloneTask(e.tasks[i])
+			setupGen, setupManifest, setupLock, needsSetup := e.beginEnvironmentSetupLocked(taskCopy.ID, m)
 			if e.scheduler != nil {
 				e.scheduler.PrimeTask(taskCopy, time.Now())
 			}
+			e.mu.Unlock()
 			e.Broker.Publish("task_updated", taskCopy)
+			if needsSetup {
+				go e.runEnvironmentSetup(taskCopy.ID, setupGen, setupManifest, manifestDir, setupLock)
+			}
 			return taskCopy, nil
 		}
 	}
@@ -276,16 +284,17 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 	}
 
 	task := &models.Task{
-		ID:              id,
-		PackageDir:      packageDir,
-		ManifestPath:    manifestPath,
-		Manifest:        m,
-		Enabled:         enabled,
-		CreatedAt:       createdAt,
-		LastReloadedAt:  now,
-		ManifestHash:    manifestHash,
-		ManifestModTime: manifestModTime,
-		DisplayName:     displayName,
+		ID:               id,
+		PackageDir:       packageDir,
+		ManifestPath:     manifestPath,
+		Manifest:         m,
+		Enabled:          enabled,
+		CreatedAt:        createdAt,
+		LastReloadedAt:   now,
+		ManifestHash:     manifestHash,
+		ManifestModTime:  manifestModTime,
+		DisplayName:      displayName,
+		EnvironmentSetup: envSetup,
 	}
 
 	e.tasks = append(e.tasks, task)
@@ -293,10 +302,15 @@ func (e *Engine) importTask(dirPath string, enabled bool, restoredID string, cre
 		e.taskGenerations[id] = 1
 	}
 	taskCopy := cloneTask(task)
+	setupGen, setupManifest, setupLock, needsSetup := e.beginEnvironmentSetupLocked(taskCopy.ID, m)
 	if e.scheduler != nil {
 		e.scheduler.PrimeTask(taskCopy, time.Now())
 	}
+	e.mu.Unlock()
 	e.Broker.Publish("task_updated", taskCopy)
+	if needsSetup {
+		go e.runEnvironmentSetup(taskCopy.ID, setupGen, setupManifest, manifestDir, setupLock)
+	}
 	return taskCopy, nil
 }
 
@@ -310,6 +324,10 @@ func (e *Engine) RemoveTask(taskID string) error {
 			delete(e.runHistory, taskID)
 			delete(e.activeRuns, taskID)
 			e.taskGenerations[taskID]++
+			if e.envSetupGenerations == nil {
+				e.envSetupGenerations = make(map[string]int64)
+			}
+			e.envSetupGenerations[taskID]++
 			for runID, info := range e.activeRunDetails {
 				if info.TaskID == taskID {
 					activeRuns = append(activeRuns, info)
@@ -329,7 +347,7 @@ func (e *Engine) RemoveTask(taskID string) error {
 		}
 	}
 	e.mu.Unlock()
-	return fmt.Errorf("task not found: %s", taskID)
+	return taskNotFoundError(taskID)
 }
 
 // SetTaskEnabled enables or disables a task.
@@ -349,7 +367,7 @@ func (e *Engine) SetTaskEnabled(taskID string, enabled bool) error {
 		}
 	}
 	e.mu.Unlock()
-	return fmt.Errorf("task not found: %s", taskID)
+	return taskNotFoundError(taskID)
 }
 
 // RunTask executes a task and returns the run record.
@@ -396,19 +414,29 @@ func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error
 	}
 	if task == nil {
 		e.mu.Unlock()
-		return nil, fmt.Errorf("task not found: %s", taskID)
+		return nil, taskNotFoundError(taskID)
 	}
 	if task.Manifest == nil {
 		e.mu.Unlock()
-		return nil, fmt.Errorf("task has no valid manifest")
+		return nil, ErrTaskNoManifest
+	}
+	if environmentSetupRequired(task.Manifest) {
+		switch task.EnvironmentSetup.State {
+		case "pending":
+			e.mu.Unlock()
+			return nil, ErrEnvironmentSetupPending
+		case "failed":
+			e.mu.Unlock()
+			return nil, environmentSetupFailedError(task.EnvironmentSetup.Message)
+		}
 	}
 	if e.activeRuns[taskID] {
 		e.mu.Unlock()
-		return nil, fmt.Errorf("task is already running")
+		return nil, ErrTaskAlreadyRunning
 	}
 	if e.maxConcurrentRuns > 0 && len(e.activeRuns) >= e.maxConcurrentRuns {
 		e.mu.Unlock()
-		return nil, fmt.Errorf("maximum concurrent runs reached (%d)", e.maxConcurrentRuns)
+		return nil, maxConcurrentRunsError(e.maxConcurrentRuns)
 	}
 	e.activeRuns[taskID] = true
 	generation := e.taskGenerations[taskID]
@@ -746,7 +774,7 @@ func (e *Engine) UpdateDeliveryProfile(p models.DeliveryProfile) error {
 		}
 	}
 	e.mu.Unlock()
-	return fmt.Errorf("delivery profile not found: %s", p.ID)
+	return deliveryProfileNotFoundError(p.ID)
 }
 
 // RemoveDeliveryProfile removes a delivery profile by ID.
@@ -761,7 +789,7 @@ func (e *Engine) RemoveDeliveryProfile(id string) error {
 		}
 	}
 	e.mu.Unlock()
-	return fmt.Errorf("delivery profile not found: %s", id)
+	return deliveryProfileNotFoundError(id)
 }
 
 // SetDeliveryProfileCommands enables or disables inbound commands for a profile.
@@ -776,7 +804,7 @@ func (e *Engine) SetDeliveryProfileCommands(id string, enabled bool) error {
 		}
 	}
 	e.mu.Unlock()
-	return fmt.Errorf("delivery profile not found: %s", id)
+	return deliveryProfileNotFoundError(id)
 }
 
 // --- Command Log ---
@@ -875,6 +903,123 @@ func (e *Engine) NextRunTimes(task *models.Task, count int) []time.Time {
 		return nil
 	}
 	return NextRunTimesForManifest(task.Manifest, count, time.Now())
+}
+
+func environmentSetupRequired(m *models.ScriptManifest) bool {
+	if m == nil {
+		return false
+	}
+	return m.Runtime.Environment.Strategy == "managed_venv"
+}
+
+func initialEnvironmentSetup(m *models.ScriptManifest) models.EnvironmentSetupStatus {
+	if !environmentSetupRequired(m) {
+		return models.EnvironmentSetupStatus{State: "not_required"}
+	}
+	return models.EnvironmentSetupStatus{
+		State:     "pending",
+		Message:   "Preparing Python environment...",
+		StartedAt: time.Now(),
+	}
+}
+
+func (e *Engine) beginEnvironmentSetupLocked(taskID string, m *models.ScriptManifest) (generation int64, manifestCopy *models.ScriptManifest, setupLock *sync.Mutex, ok bool) {
+	if !environmentSetupRequired(m) {
+		return 0, nil, nil, false
+	}
+	if e.envSetupGenerations == nil {
+		e.envSetupGenerations = make(map[string]int64)
+	}
+	e.envSetupGenerations[taskID]++
+	return e.envSetupGenerations[taskID], cloneManifest(m), e.environmentSetupLockLocked(taskID), true
+}
+
+func (e *Engine) runEnvironmentSetup(taskID string, generation int64, m *models.ScriptManifest, manifestDir string, setupLock *sync.Mutex) {
+	if setupLock != nil {
+		setupLock.Lock()
+		defer setupLock.Unlock()
+	}
+
+	if !e.environmentSetupGenerationMatches(taskID, generation) {
+		return
+	}
+
+	setupFunc := e.environmentSetupFunc
+	if setupFunc == nil {
+		setupFunc = EnsureEnvironment
+	}
+	err := setupFunc(m, manifestDir)
+
+	e.mu.Lock()
+	if !e.environmentSetupGenerationMatchesLocked(taskID, generation) {
+		e.mu.Unlock()
+		return
+	}
+	var taskCopy *models.Task
+	for i := range e.tasks {
+		if e.tasks[i].ID != taskID {
+			continue
+		}
+		now := time.Now()
+		startedAt := e.tasks[i].EnvironmentSetup.StartedAt
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		if err != nil {
+			e.tasks[i].EnvironmentSetup = models.EnvironmentSetupStatus{
+				State:      "failed",
+				Message:    err.Error(),
+				StartedAt:  startedAt,
+				FinishedAt: now,
+			}
+		} else {
+			e.tasks[i].EnvironmentSetup = models.EnvironmentSetupStatus{
+				State:      "ready",
+				StartedAt:  startedAt,
+				FinishedAt: now,
+			}
+		}
+		taskCopy = cloneTask(e.tasks[i])
+		break
+	}
+	e.mu.Unlock()
+	if taskCopy == nil {
+		return
+	}
+	e.Broker.Publish("task_updated", taskCopy)
+	if persistErr := e.PersistState(); persistErr != nil {
+		log.Printf("[CronPlus] Warning: failed to persist environment setup state: %v", persistErr)
+	}
+}
+
+func (e *Engine) environmentSetupLockLocked(taskID string) *sync.Mutex {
+	if e.envSetupLocks == nil {
+		e.envSetupLocks = make(map[string]*sync.Mutex)
+	}
+	setupLock := e.envSetupLocks[taskID]
+	if setupLock == nil {
+		setupLock = &sync.Mutex{}
+		e.envSetupLocks[taskID] = setupLock
+	}
+	return setupLock
+}
+
+func (e *Engine) environmentSetupGenerationMatches(taskID string, generation int64) bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.environmentSetupGenerationMatchesLocked(taskID, generation)
+}
+
+func (e *Engine) environmentSetupGenerationMatchesLocked(taskID string, generation int64) bool {
+	if generation == 0 || e.envSetupGenerations[taskID] != generation {
+		return false
+	}
+	for _, task := range e.tasks {
+		if task.ID == taskID {
+			return true
+		}
+	}
+	return false
 }
 
 func joinLines(lines []string) string {

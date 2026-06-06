@@ -124,6 +124,7 @@ func handleGetTasks(engine *core.Engine) http.HandlerFunc {
 				m["description"] = t.Manifest.Script.Description
 			}
 			m["manifestStatus"] = engine.ManifestStatus(t)
+			m["environmentSetup"] = t.EnvironmentSetup
 			m["timeline"] = engine.TaskTimeline(t)
 			if nr := engine.NextRunTime(t); nr != nil {
 				m["nextRun"] = nr.Format(time.RFC3339)
@@ -167,6 +168,7 @@ func handleGetTask(engine *core.Engine) http.HandlerFunc {
 			m["description"] = task.Manifest.Script.Description
 		}
 		m["manifestStatus"] = engine.ManifestStatus(task)
+		m["environmentSetup"] = task.EnvironmentSetup
 		m["timeline"] = engine.TaskTimeline(task)
 		if nr := engine.NextRunTime(task); nr != nil {
 			m["nextRun"] = nr.Format(time.RFC3339)
@@ -205,8 +207,7 @@ func handleImportTask(engine *core.Engine) http.HandlerFunc {
 			enabled = *body.Enabled
 		}
 		task, err := engine.ImportTask(body.Path, enabled)
-		if err != nil {
-			writeError(w, http.StatusBadRequest, "import_failed", err.Error())
+		if writeEngineError(w, err, http.StatusBadRequest, "import_failed") {
 			return
 		}
 
@@ -215,8 +216,9 @@ func handleImportTask(engine *core.Engine) http.HandlerFunc {
 		}
 
 		writeJSON(w, http.StatusCreated, map[string]any{
-			"id":   task.ID,
-			"name": task.DisplayName,
+			"id":               task.ID,
+			"name":             task.DisplayName,
+			"environmentSetup": task.EnvironmentSetup,
 		})
 	}
 }
@@ -224,8 +226,7 @@ func handleImportTask(engine *core.Engine) http.HandlerFunc {
 func handleDeleteTask(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := engine.RemoveTask(id); err != nil {
-			writeError(w, http.StatusNotFound, "task_not_found", err.Error())
+		if writeEngineError(w, engine.RemoveTask(id), http.StatusBadRequest, "remove_failed") {
 			return
 		}
 		if !persistOrError(w, engine) {
@@ -239,20 +240,16 @@ func handleReloadTask(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		task, err := engine.ReloadTask(id)
-		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
-				writeError(w, http.StatusNotFound, "task_not_found", err.Error())
-				return
-			}
-			writeError(w, http.StatusBadRequest, "reload_failed", err.Error())
+		if writeEngineError(w, err, http.StatusBadRequest, "reload_failed") {
 			return
 		}
 		if !persistOrError(w, engine) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"id":   task.ID,
-			"name": task.DisplayName,
+			"id":               task.ID,
+			"name":             task.DisplayName,
+			"environmentSetup": task.EnvironmentSetup,
 		})
 	}
 }
@@ -273,16 +270,7 @@ func handleRunTask(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
 		runID, err := engine.StartTaskRunWithID(id, "manual")
-		if err != nil {
-			if strings.Contains(err.Error(), "not found") {
-				writeError(w, http.StatusNotFound, "task_not_found", "No task with ID "+id)
-				return
-			}
-			if strings.Contains(err.Error(), "already running") {
-				writeError(w, http.StatusConflict, "task_already_running", err.Error())
-				return
-			}
-			writeError(w, http.StatusBadRequest, "run_failed", err.Error())
+		if writeEngineError(w, err, http.StatusBadRequest, "run_failed") {
 			return
 		}
 
@@ -327,8 +315,7 @@ func handleDeliveryPreview(engine *core.Engine) http.HandlerFunc {
 func handleSetTaskEnabled(engine *core.Engine, enabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := engine.SetTaskEnabled(id, enabled); err != nil {
-			writeError(w, http.StatusNotFound, "task_not_found", err.Error())
+		if writeEngineError(w, engine.SetTaskEnabled(id, enabled), http.StatusBadRequest, "set_enabled_failed") {
 			return
 		}
 		if !persistOrError(w, engine) {
@@ -445,8 +432,7 @@ func handleUpdateDelivery(engine *core.Engine) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "invalid_delivery_profile", err.Error())
 			return
 		}
-		if err := engine.UpdateDeliveryProfile(p); err != nil {
-			writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
+		if writeEngineError(w, engine.UpdateDeliveryProfile(p), http.StatusBadRequest, "update_failed") {
 			return
 		}
 		if !persistOrError(w, engine) {
@@ -564,8 +550,7 @@ func mergedDeliveryConfigForValidation(existing, updates map[string]string) map[
 func handleDeleteDelivery(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := engine.RemoveDeliveryProfile(id); err != nil {
-			writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
+		if writeEngineError(w, engine.RemoveDeliveryProfile(id), http.StatusBadRequest, "delete_failed") {
 			return
 		}
 		if !persistOrError(w, engine) {
@@ -578,8 +563,7 @@ func handleDeleteDelivery(engine *core.Engine) http.HandlerFunc {
 func handleSetDeliveryCommands(engine *core.Engine, enabled bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
-		if err := engine.SetDeliveryProfileCommands(id, enabled); err != nil {
-			writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
+		if writeEngineError(w, engine.SetDeliveryProfileCommands(id, enabled), http.StatusBadRequest, "commands_failed") {
 			return
 		}
 		if !persistOrError(w, engine) {
@@ -641,6 +625,13 @@ func buildAttentionItems(engine *core.Engine, tasks []*models.Task) []map[string
 	}
 
 	for _, task := range tasks {
+		switch task.EnvironmentSetup.State {
+		case "pending":
+			add("environment", "warning", task, "Preparing Python environment", task.EnvironmentSetup.Message, "Open task")
+		case "failed":
+			add("environment", "danger", task, "Environment setup failed", task.EnvironmentSetup.Message, "Open task")
+		}
+
 		status := engine.ManifestStatus(task)
 		if status.Error != "" {
 			add("manifest", "danger", task, "Manifest cannot be inspected", status.Error, "Open task")

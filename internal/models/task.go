@@ -16,8 +16,17 @@ type Task struct {
 	LastReloadedAt  time.Time       `json:"lastReloadedAt"`
 	ManifestHash    string          `json:"manifestHash,omitempty"`
 	ManifestModTime time.Time       `json:"manifestModTime,omitempty"`
-	DisplayName     string          `json:"displayName"`
-	ScheduleText    string          `json:"scheduleText"`
+	DisplayName       string                  `json:"displayName"`
+	ScheduleText      string                  `json:"scheduleText"`
+	EnvironmentSetup  EnvironmentSetupStatus  `json:"environmentSetup"`
+}
+
+// EnvironmentSetupStatus tracks background Python environment preparation for a task.
+type EnvironmentSetupStatus struct {
+	State      string    `json:"state"` // ready, pending, failed, not_required
+	Message    string    `json:"message,omitempty"`
+	StartedAt  time.Time `json:"startedAt,omitempty"`
+	FinishedAt time.Time `json:"finishedAt,omitempty"`
 }
 
 type ManifestStatus struct {

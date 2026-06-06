@@ -124,10 +124,12 @@ CronPlus does not create task packages and does not edit task files. AI agents o
 
 | Action | Meaning |
 |---|---|
-| **Import** | Register a task package by directory path |
+| **Import** | Register a task package by directory path. Returns immediately after manifest validation; `managed_venv` environment setup continues in the background. |
 | **Reload Manifest** | Re-read the package manifest from disk, preserving task ID and run history |
-| **Run Now** | Execute the imported task immediately |
+| **Run Now** | Execute the imported task immediately. Blocked while environment setup is `pending` or `failed` for `managed_venv` tasks. |
 | **Remove Import** | Unregister the task from CronPlus without deleting package files |
+
+Tasks with `runtime.environment.strategy: managed_venv` expose `environmentSetup.state` (`pending`, `ready`, `failed`, or `not_required`) in the API and web UI until the venv and requirements are prepared.
 
 ## CLI
 
@@ -209,7 +211,7 @@ MCP resources include `cronplus://status`, `cronplus://tasks`, task/run resource
 | Feature | Description |
 |---|---|
 | **Web UI** | Dark-themed dashboard with live updates via SSE |
-| **Scheduler** | 5-field cron expressions with timezone support |
+| **Scheduler** | 5-field cron expressions with timezone support; 30-second evaluation tick (runs may start up to ~30s after the scheduled minute) |
 | **Python Envs** | System Python by default, managed venv per task, or custom venv |
 | **Delivery** | Telegram (more drivers planned) |
 | **Inbound Commands** | Control CronPlus via Telegram messages |

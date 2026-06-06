@@ -86,8 +86,8 @@ cronplus (single Go binary)
 
 ## Key Behaviors
 
-1. **Scheduling**: 30-second tick evaluates cron expressions. Skip-if-running policy prevents overlap, and a daemon-level concurrent-run cap limits aggregate load.
-2. **Environment**: System Python by default, with optional managed venv per task or custom venv path.
+1. **Scheduling**: 30-second tick evaluates cron expressions, so minute-level schedules may start up to ~30s late. Skip-if-running policy prevents overlap, and a daemon-level concurrent-run cap limits aggregate load.
+2. **Environment**: System Python by default, with optional managed venv per task or custom venv path. Import and reload return after manifest validation; managed-venv creation and `pip install` run in the background and block runs until `environmentSetup.state` is `ready`.
 3. **Delivery**: After a run, evaluate send_on conditions, render message template, send via driver.
 4. **Inbound Commands**: Telegram long-polling for /status, /list, /run, /help, etc.
 5. **Persistence**: JSON file with atomic writes. State restored on daemon restart.

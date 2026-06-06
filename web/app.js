@@ -553,6 +553,7 @@ function renderTaskCards(tasks) {
                     ${esc(t.scheduleSummary || 'No schedule')}
                     ${t.nextRun ? `· Next: ${formatTime(t.nextRun)}` : ''}
                     ${t.manifestStatus?.changed ? '· <span class="badge badge-warning">manifest changed</span>' : ''}
+                    ${renderEnvironmentSetupBadge(t.environmentSetup)}
                     ${lr ? `· Last: <span class="badge badge-${runStatusBadge(lr.status)}">${esc(lr.status)}</span>` : ''}
                 </div>
             </div>
@@ -582,6 +583,7 @@ function renderTaskDetail(path) {
             <h1>${esc(task.name)}</h1>
             <span class="badge badge-${task.enabled ? 'success' : 'muted'}">${task.enabled ? 'Enabled' : 'Disabled'}</span>
             ${task.manifestStatus?.changed ? '<span class="badge badge-warning">Manifest Changed</span>' : ''}
+            ${renderEnvironmentSetupBadge(task.environmentSetup, true)}
             <div class="detail-actions">
                 <button class="btn btn-primary" onclick="runTask('${id}')">▶ Run Now</button>
                 <button class="btn" onclick="checkImportedTask('${id}')">Check</button>
@@ -612,6 +614,12 @@ function renderTaskDetail(path) {
                     ${task.nextRun ? `<p style="color:var(--text-secondary);font-size:13px;display:flex;align-items:center;gap:6px;"><span class="task-status-dot running"></span> Next: ${formatTime(task.nextRun)}</p>` : ''}
                     ${renderNextRuns(task.nextRuns || [])}
                 </div>
+
+                ${task.environmentSetup?.state === 'pending' || task.environmentSetup?.state === 'failed' ? `<div class="detail-card">
+                    <h3>Environment</h3>
+                    <div class="manifest-row"><span class="label">Status</span><span class="value">${esc(task.environmentSetup.state)}</span></div>
+                    ${task.environmentSetup.message ? `<div class="delivery-error">${esc(task.environmentSetup.message)}</div>` : ''}
+                </div>` : ''}
 
                 <div class="detail-card">
                     <h3>Manifest</h3>
@@ -1596,6 +1604,14 @@ function sanitizeRunForCache(run) {
 function cloneJSON(value) {
     if (value === undefined || value === null) return value;
     return JSON.parse(JSON.stringify(value));
+}
+
+function renderEnvironmentSetupBadge(setup, standalone) {
+    if (!setup || setup.state === 'ready' || setup.state === 'not_required') return '';
+    const label = setup.state === 'pending' ? 'env preparing' : 'env failed';
+    const badgeClass = setup.state === 'pending' ? 'badge-warning' : 'badge-danger';
+    const badge = `<span class="badge ${badgeClass}">${label}</span>`;
+    return standalone ? badge : `· ${badge}`;
 }
 
 function esc(s) {

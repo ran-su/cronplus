@@ -3,6 +3,7 @@
 .env.*
 !.env.example
 .cronplus-venv/
+.cache/
 .home/
 coverage.out
 cronplus

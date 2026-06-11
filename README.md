@@ -118,6 +118,21 @@ print(f"CRONPLUS_RESULT={json.dumps(result)}")
 
 Supported statuses are `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`. When CronPlus can parse a structured result with a valid status, that status is authoritative for run state and delivery matching, even if the process exits non-zero. Unknown structured result statuses are treated as `failure`. If there is no parseable structured result, CronPlus falls back to the script exit code.
 
+### Task Dependencies
+
+Tasks can declare prerequisite tasks in their manifest. CronPlus checks dependencies after reserving a run but before launching the script. The check uses the dependency task's latest completed run; an in-progress run does not count until it completes.
+
+```yaml
+dependencies:
+  tasks:
+    - slug: browser-manager
+      require_status: success
+      max_age_seconds: 3900
+      on_unhealthy: skip
+```
+
+Each dependency uses exactly one of `slug` or `id`. `require_status` defaults to `success`; `max_age_seconds` is optional and disables freshness checks when omitted or set to `0`; `on_unhealthy` defaults to `skip` and can also be `fail`. When a dependency is unhealthy, CronPlus records a completed run with status `skipped` or `failure` without launching the dependent script.
+
 ### Task Lifecycle
 
 CronPlus does not create task packages and does not edit task files. AI agents or humans create package directories that follow the manifest contract; CronPlus imports those packages, validates them, schedules them, and records runs.

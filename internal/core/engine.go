@@ -403,6 +403,12 @@ type reservedTaskRun struct {
 	startedAt  time.Time
 }
 
+type dependencyGateResult struct {
+	status  string
+	summary string
+	data    map[string]any
+}
+
 func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error) {
 	e.mu.Lock()
 	var task *models.Task
@@ -465,19 +471,26 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 	startedAt := reserved.startedAt
 	runID := reserved.runID
 
-	// Run the script (this blocks — called in a goroutine by the scheduler/API)
-	outcome := RunScriptWithOptions(task.Manifest, manifestDir, RunScriptOptions{
-		TaskID: taskID,
-		RunID:  runID,
-		OnStarted: func(info models.ActiveRunInfo) {
-			e.recordActiveRun(info, reserved.generation)
-		},
-		OnFinished: func(runID string) {
-			e.clearActiveRunRecord(runID)
-		},
-	})
-
-	finishedAt := time.Now()
+	var outcome *models.RunOutcome
+	checkedAt := time.Now()
+	finishedAt := checkedAt
+	if gate := e.evaluateTaskDependencies(task, checkedAt); gate != nil {
+		finishedAt = time.Now()
+		outcome = dependencyGateOutcome(gate, startedAt, finishedAt)
+	} else {
+		// Run the script (this blocks — called in a goroutine by the scheduler/API)
+		outcome = RunScriptWithOptions(task.Manifest, manifestDir, RunScriptOptions{
+			TaskID: taskID,
+			RunID:  runID,
+			OnStarted: func(info models.ActiveRunInfo) {
+				e.recordActiveRun(info, reserved.generation)
+			},
+			OnFinished: func(runID string) {
+				e.clearActiveRunRecord(runID)
+			},
+		})
+		finishedAt = time.Now()
+	}
 
 	record := &models.RunRecord{
 		ID:         runID,
@@ -531,6 +544,167 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 	}
 
 	return record
+}
+
+func (e *Engine) evaluateTaskDependencies(task *models.Task, now time.Time) *dependencyGateResult {
+	if task == nil || task.Manifest == nil || len(task.Manifest.Dependencies.Tasks) == 0 {
+		return nil
+	}
+
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+
+	for i, dependency := range task.Manifest.Dependencies.Tasks {
+		result := e.evaluateTaskDependencyLocked(i, dependency, now)
+		if result != nil {
+			return result
+		}
+	}
+	return nil
+}
+
+func (e *Engine) evaluateTaskDependencyLocked(index int, dependency models.TaskDependency, now time.Time) *dependencyGateResult {
+	requiredStatus := models.NormalizeRunStatus(dependency.RequireStatus)
+	if requiredStatus == "" {
+		requiredStatus = "success"
+	}
+	onUnhealthy := strings.ToLower(strings.TrimSpace(dependency.OnUnhealthy))
+	if onUnhealthy == "" {
+		onUnhealthy = "skip"
+	}
+
+	target, ambiguous := e.findDependencyTargetLocked(dependency)
+	selector := dependencySelector(dependency)
+	baseData := map[string]any{
+		"dependencyIndex": index,
+		"selector":        selector,
+		"requiredStatus":  requiredStatus,
+		"maxAgeSeconds":   dependency.MaxAgeSeconds,
+		"onUnhealthy":     onUnhealthy,
+	}
+	if strings.TrimSpace(dependency.ID) != "" {
+		baseData["dependencyID"] = strings.TrimSpace(dependency.ID)
+	}
+	if strings.TrimSpace(dependency.Slug) != "" {
+		baseData["dependencySlug"] = strings.TrimSpace(dependency.Slug)
+	}
+
+	if ambiguous {
+		return unhealthyDependencyResult(onUnhealthy, fmt.Sprintf("Dependency %s matches multiple tasks.", selector), baseData)
+	}
+	if target == nil {
+		return unhealthyDependencyResult(onUnhealthy, fmt.Sprintf("Dependency %s was not found.", selector), baseData)
+	}
+
+	baseData["targetID"] = target.ID
+	baseData["targetName"] = target.DisplayName
+	history := e.runHistory[target.ID]
+	if len(history) == 0 {
+		return unhealthyDependencyResult(onUnhealthy, fmt.Sprintf("Dependency %s has no completed runs.", selector), baseData)
+	}
+
+	last := history[0]
+	lastStatus := models.RunStatusFromOutcome(last.Outcome)
+	baseData["lastStatus"] = lastStatus
+	if !last.FinishedAt.IsZero() {
+		baseData["lastFinishedAt"] = last.FinishedAt
+	}
+	if lastStatus != requiredStatus {
+		return unhealthyDependencyResult(
+			onUnhealthy,
+			fmt.Sprintf("Dependency %s latest status is %s; required %s.", selector, lastStatus, requiredStatus),
+			baseData,
+		)
+	}
+
+	if dependency.MaxAgeSeconds > 0 {
+		maxAge := time.Duration(dependency.MaxAgeSeconds) * time.Second
+		if last.FinishedAt.IsZero() {
+			return unhealthyDependencyResult(
+				onUnhealthy,
+				fmt.Sprintf("Dependency %s latest run has no finish time; required age <= %s.", selector, maxAge),
+				baseData,
+			)
+		}
+		age := now.Sub(last.FinishedAt)
+		if age > maxAge {
+			baseData["lastAgeSeconds"] = int64(age.Seconds())
+			return unhealthyDependencyResult(
+				onUnhealthy,
+				fmt.Sprintf("Dependency %s latest %s is stale; age %s exceeds max %s.", selector, requiredStatus, age.Round(time.Second), maxAge),
+				baseData,
+			)
+		}
+	}
+
+	return nil
+}
+
+func (e *Engine) findDependencyTargetLocked(dependency models.TaskDependency) (*models.Task, bool) {
+	dependencyID := strings.TrimSpace(dependency.ID)
+	if dependencyID != "" {
+		for _, task := range e.tasks {
+			if task.ID == dependencyID {
+				return task, false
+			}
+		}
+		return nil, false
+	}
+
+	dependencySlug := strings.TrimSpace(dependency.Slug)
+	var found *models.Task
+	for _, task := range e.tasks {
+		if task.Slug() != dependencySlug {
+			continue
+		}
+		if found != nil {
+			return nil, true
+		}
+		found = task
+	}
+	return found, false
+}
+
+func dependencySelector(dependency models.TaskDependency) string {
+	dependencyID := strings.TrimSpace(dependency.ID)
+	if dependencyID != "" {
+		return fmt.Sprintf("id %q", dependencyID)
+	}
+	return fmt.Sprintf("slug %q", strings.TrimSpace(dependency.Slug))
+}
+
+func unhealthyDependencyResult(status, summary string, data map[string]any) *dependencyGateResult {
+	if status == "fail" {
+		status = "failure"
+	} else {
+		status = "skipped"
+	}
+	dataCopy := cloneAnyMap(data)
+	dataCopy["reason"] = summary
+	return &dependencyGateResult{
+		status:  status,
+		summary: summary,
+		data:    dataCopy,
+	}
+}
+
+func dependencyGateOutcome(gate *dependencyGateResult, startedAt, finishedAt time.Time) *models.RunOutcome {
+	exitCode := 0
+	if gate.status == "failure" {
+		exitCode = 1
+	}
+	return &models.RunOutcome{
+		ExitCode: exitCode,
+		ParsedResult: &models.ParsedResult{
+			Status:  gate.status,
+			Summary: gate.summary,
+			Data:    gate.data,
+		},
+		Diagnostics: models.RunDiagnostics{
+			StructuredResultFound: true,
+		},
+		DurationMs: finishedAt.Sub(startedAt).Milliseconds(),
+	}
 }
 
 func (e *Engine) recordActiveRun(info models.ActiveRunInfo, generation int64) {
@@ -1142,6 +1316,7 @@ func cloneManifest(m *models.ScriptManifest) *models.ScriptManifest {
 	cp.Runtime.Env = cloneEnvVarMap(m.Runtime.Env)
 	cp.Delivery.Profiles = append([]string(nil), m.Delivery.Profiles...)
 	cp.Delivery.SendOn = append([]string(nil), m.Delivery.SendOn...)
+	cp.Dependencies.Tasks = append([]models.TaskDependency(nil), m.Dependencies.Tasks...)
 	cp.Delivery.InlineProfiles = make([]models.InlineDeliveryProfile, len(m.Delivery.InlineProfiles))
 	for i, profile := range m.Delivery.InlineProfiles {
 		cp.Delivery.InlineProfiles[i] = profile

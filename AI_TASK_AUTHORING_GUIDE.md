@@ -49,6 +49,8 @@ schedule:
 delivery:
   profiles: []
   send_on: [success, failure]
+dependencies:
+  tasks: []
 result_contract:
   version: 1
   expect_structured_result: true
@@ -70,6 +72,7 @@ Field guidance:
 - If day-of-month and day-of-week are both restricted, a run matches when either day field matches.
 - `missed_run_policy` must be `skip`; CronPlus does not backfill missed runs.
 - `delivery.send_on` supports `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`.
+- `dependencies.tasks` is optional. Each dependency must use exactly one of `slug` or `id`; `require_status` defaults to `success`; `max_age_seconds` is optional; `on_unhealthy` defaults to `skip` and can be `fail`.
 
 ## Python Script Contract
 

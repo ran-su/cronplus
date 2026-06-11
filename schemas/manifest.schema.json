@@ -126,6 +126,42 @@
         }
       }
     },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "tasks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "oneOf": [
+              {
+                "required": ["id"],
+                "not": { "required": ["slug"] }
+              },
+              {
+                "required": ["slug"],
+                "not": { "required": ["id"] }
+              }
+            ],
+            "properties": {
+              "id": { "type": "string", "minLength": 1 },
+              "slug": { "type": "string", "minLength": 1 },
+              "require_status": {
+                "type": "string",
+                "enum": ["success", "failure", "failed", "warning", "skipped"]
+              },
+              "max_age_seconds": { "type": "integer", "minimum": 0 },
+              "on_unhealthy": {
+                "type": "string",
+                "enum": ["skip", "fail"]
+              }
+            }
+          }
+        }
+      }
+    },
     "ui": {
       "type": "object",
       "additionalProperties": false,

@@ -2,13 +2,14 @@ package models
 
 // ScriptManifest represents the parsed .cronplus.yaml file.
 type ScriptManifest struct {
-	ManifestVersion int             `yaml:"manifest_version" json:"manifestVersion"`
-	Script          ScriptSection   `yaml:"script" json:"script"`
-	Runtime         RuntimeSection  `yaml:"runtime" json:"runtime"`
-	Schedule        ScheduleSection `yaml:"schedule" json:"schedule"`
-	Delivery        DeliverySection `yaml:"delivery" json:"delivery"`
-	UI              UISection       `yaml:"ui" json:"ui"`
-	ResultContract  ResultContract  `yaml:"result_contract" json:"resultContract"`
+	ManifestVersion int               `yaml:"manifest_version" json:"manifestVersion"`
+	Script          ScriptSection     `yaml:"script" json:"script"`
+	Runtime         RuntimeSection    `yaml:"runtime" json:"runtime"`
+	Schedule        ScheduleSection   `yaml:"schedule" json:"schedule"`
+	Delivery        DeliverySection   `yaml:"delivery" json:"delivery"`
+	Dependencies    DependencySection `yaml:"dependencies" json:"dependencies"`
+	UI              UISection         `yaml:"ui" json:"ui"`
+	ResultContract  ResultContract    `yaml:"result_contract" json:"resultContract"`
 }
 
 type ScriptSection struct {
@@ -76,6 +77,18 @@ type DeliverySection struct {
 	InlineProfiles  []InlineDeliveryProfile `yaml:"inline_profiles" json:"inlineProfiles"`
 }
 
+type DependencySection struct {
+	Tasks []TaskDependency `yaml:"tasks" json:"tasks"`
+}
+
+type TaskDependency struct {
+	ID            string `yaml:"id" json:"id,omitempty"`
+	Slug          string `yaml:"slug" json:"slug,omitempty"`
+	RequireStatus string `yaml:"require_status" json:"requireStatus,omitempty"`
+	MaxAgeSeconds int    `yaml:"max_age_seconds" json:"maxAgeSeconds,omitempty"`
+	OnUnhealthy   string `yaml:"on_unhealthy" json:"onUnhealthy,omitempty"`
+}
+
 type InlineDeliveryProfile struct {
 	ID     string            `yaml:"id" json:"id"`
 	Name   string            `yaml:"name" json:"name"`
@@ -128,5 +141,16 @@ func (m *ScriptManifest) Defaults() {
 	}
 	if m.Runtime.Env == nil {
 		m.Runtime.Env = make(map[string]EnvVar)
+	}
+	for i := range m.Dependencies.Tasks {
+		dependency := &m.Dependencies.Tasks[i]
+		if dependency.RequireStatus == "" {
+			dependency.RequireStatus = "success"
+		} else {
+			dependency.RequireStatus = NormalizeRunStatus(dependency.RequireStatus)
+		}
+		if dependency.OnUnhealthy == "" {
+			dependency.OnUnhealthy = "skip"
+		}
 	}
 }

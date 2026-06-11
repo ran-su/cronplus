@@ -72,6 +72,14 @@ delivery:
         bot_token: "123456:ABC-DEF..."
         chat_id: "-100123456789"
 
+# Optional. Task dependencies checked before launching the script.
+dependencies:
+  tasks:
+    - slug: browser-manager      # Exactly one of slug or id is required.
+      require_status: success    # Default: success
+      max_age_seconds: 3900      # Optional freshness bound; 0 or omitted means no age check.
+      on_unhealthy: skip         # "skip" (default) or "fail"
+
 # Optional. UI hints.
 ui:
   category: Shopping
@@ -103,6 +111,10 @@ result_contract:
 | `runtime.resource_limits.graceful_kill_seconds` | Must be greater than 0 |
 | `runtime.resource_limits.*` | Optional hard limits must be greater than or equal to 0 |
 | `schedule.missed_run_policy` | Must be `skip` |
+| `dependencies.tasks[].id` / `slug` | Exactly one is required for each dependency |
+| `dependencies.tasks[].require_status` | Must be `success`, `failure`, `warning`, or `skipped`; `failed` is accepted as an alias for `failure` |
+| `dependencies.tasks[].max_age_seconds` | Optional; must be greater than or equal to 0 |
+| `dependencies.tasks[].on_unhealthy` | Must be `skip` or `fail` |
 | `delivery.inline_profiles[].id` | Required, non-empty |
 | `delivery.inline_profiles[].driver` | Required, non-empty |
 
@@ -120,7 +132,15 @@ result_contract:
 | `schedule.timezone` | `UTC` |
 | `schedule.missed_run_policy` | `skip` |
 | `delivery.send_on` | `["success", "failure"]`; `"failed"` is accepted as a compatibility alias for `"failure"` |
+| `dependencies.tasks[].require_status` | `success` |
+| `dependencies.tasks[].on_unhealthy` | `skip` |
 | `result_contract.result_prefix` | `CRONPLUS_RESULT=` |
+
+## Dependency Semantics
+
+Dependencies are evaluated after a run is reserved and before the script process starts. CronPlus checks the dependency task's latest completed run; an in-progress dependency run does not count until it completes. If the dependency task is missing, has no completed runs, has the wrong latest status, or has a latest matching run older than `max_age_seconds`, the dependent script is not launched.
+
+With `on_unhealthy: skip`, CronPlus records the attempt as a completed run with status `skipped`. With `on_unhealthy: fail`, CronPlus records the attempt as status `failure`. In both cases, run history, events, delivery matching, and persistence use the normal completed-run flow.
 
 ## JSON Schema
 

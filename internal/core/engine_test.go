@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -330,6 +331,205 @@ func TestStartTaskRunRejectsAlreadyRunning(t *testing.T) {
 	}
 }
 
+func TestRunTaskSkipsWhenDependencyMissing(t *testing.T) {
+	dir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - id: missing-task
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+
+	record, err := engine.RunTask(task.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "skipped" {
+		t.Fatalf("status = %q, want skipped; outcome = %+v", got, record.Outcome)
+	}
+	if record.Outcome.ParsedResult == nil || !strings.Contains(record.Outcome.ParsedResult.Summary, "was not found") {
+		t.Fatalf("summary = %+v, want missing dependency reason", record.Outcome.ParsedResult)
+	}
+	if history := engine.RunHistory(task.ID); len(history) != 1 || history[0].ID != record.ID {
+		t.Fatalf("history = %+v, want skipped run recorded", history)
+	}
+	if engine.IsRunning(task.ID) {
+		t.Fatal("task should not remain active after dependency skip")
+	}
+}
+
+func TestRunTaskDependencySkipSatisfiesStructuredResultContract(t *testing.T) {
+	dir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - id: missing-task
+result_contract:
+  expect_structured_result: true
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+
+	record, err := engine.RunTask(task.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if !record.Outcome.Diagnostics.StructuredResultFound {
+		t.Fatal("dependency skip should be treated as a structured CronPlus result")
+	}
+	diagnosis := DiagnoseRun(engine.Task(task.ID), record)
+	if diagnosis.Status != "skipped" {
+		t.Fatalf("diagnosis status = %q, want skipped; diagnosis = %+v", diagnosis.Status, diagnosis)
+	}
+	if !strings.Contains(diagnosis.Summary, "was not found") {
+		t.Fatalf("diagnosis summary = %q, want dependency reason", diagnosis.Summary)
+	}
+}
+
+func TestRunTaskSkipsWhenDependencyHasNoHistory(t *testing.T) {
+	managerDir := writeNamedTaskPackage(t, "Browser Manager", "print('manager')\n", "", "")
+	dependentDir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - slug: browser-manager
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	if _, err := engine.ImportTask(managerDir, true); err != nil {
+		t.Fatalf("ImportTask manager: %v", err)
+	}
+	dependent, err := engine.ImportTask(dependentDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask dependent: %v", err)
+	}
+
+	record, err := engine.RunTask(dependent.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "skipped" {
+		t.Fatalf("status = %q, want skipped; outcome = %+v", got, record.Outcome)
+	}
+	if record.Outcome.ParsedResult == nil || !strings.Contains(record.Outcome.ParsedResult.Summary, "has no completed runs") {
+		t.Fatalf("summary = %+v, want no history reason", record.Outcome.ParsedResult)
+	}
+}
+
+func TestRunTaskRunsWhenDependencyFreshSuccess(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	managerDir := writeNamedTaskPackage(t, "Browser Manager", "print('manager')\n", python, "")
+	dependentDir := writeNamedTaskPackage(t, "Dependent Task", "from pathlib import Path\nPath('ran.txt').write_text('ran')\n", python, `dependencies:
+  tasks:
+    - slug: browser-manager
+      max_age_seconds: 3900
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	manager, err := engine.ImportTask(managerDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask manager: %v", err)
+	}
+	dependent, err := engine.ImportTask(dependentDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask dependent: %v", err)
+	}
+	engine.runHistory[manager.ID] = []models.RunRecord{{
+		ID:         "manager-run",
+		TaskID:     manager.ID,
+		FinishedAt: time.Now(),
+		Outcome:    models.RunOutcome{ExitCode: 0},
+	}}
+
+	record, err := engine.RunTask(dependent.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "success" {
+		t.Fatalf("status = %q, want success; outcome = %+v", got, record.Outcome)
+	}
+	if _, err := os.Stat(filepath.Join(dependentDir, "ran.txt")); err != nil {
+		t.Fatalf("dependent script did not run: %v", err)
+	}
+}
+
+func TestRunTaskSkipsWhenDependencyIsStale(t *testing.T) {
+	managerDir := writeNamedTaskPackage(t, "Browser Manager", "print('manager')\n", "", "")
+	dependentDir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - slug: browser-manager
+      max_age_seconds: 60
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	manager, err := engine.ImportTask(managerDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask manager: %v", err)
+	}
+	dependent, err := engine.ImportTask(dependentDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask dependent: %v", err)
+	}
+	engine.runHistory[manager.ID] = []models.RunRecord{{
+		ID:         "manager-run",
+		TaskID:     manager.ID,
+		FinishedAt: time.Now().Add(-2 * time.Hour),
+		Outcome:    models.RunOutcome{ExitCode: 0},
+	}}
+
+	record, err := engine.RunTask(dependent.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "skipped" {
+		t.Fatalf("status = %q, want skipped; outcome = %+v", got, record.Outcome)
+	}
+	if record.Outcome.ParsedResult == nil || !strings.Contains(record.Outcome.ParsedResult.Summary, "is stale") {
+		t.Fatalf("summary = %+v, want stale dependency reason", record.Outcome.ParsedResult)
+	}
+}
+
+func TestRunTaskFailsWhenDependencyUnhealthyPolicyIsFail(t *testing.T) {
+	managerDir := writeNamedTaskPackage(t, "Browser Manager", "print('manager')\n", "", "")
+	dependentDir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - slug: browser-manager
+      require_status: success
+      on_unhealthy: fail
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	manager, err := engine.ImportTask(managerDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask manager: %v", err)
+	}
+	dependent, err := engine.ImportTask(dependentDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask dependent: %v", err)
+	}
+	engine.runHistory[manager.ID] = []models.RunRecord{{
+		ID:         "manager-run",
+		TaskID:     manager.ID,
+		FinishedAt: time.Now(),
+		Outcome:    models.RunOutcome{ExitCode: 1},
+	}}
+
+	record, err := engine.RunTask(dependent.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "failure" {
+		t.Fatalf("status = %q, want failure; outcome = %+v", got, record.Outcome)
+	}
+	if record.Outcome.ExitCode != 1 {
+		t.Fatalf("exit code = %d, want 1", record.Outcome.ExitCode)
+	}
+	if record.Outcome.ParsedResult == nil || !strings.Contains(record.Outcome.ParsedResult.Summary, "latest status is failure") {
+		t.Fatalf("summary = %+v, want status mismatch reason", record.Outcome.ParsedResult)
+	}
+}
+
 func TestRemoveTaskTerminatesActiveRunAndSkipsHistory(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {
@@ -382,12 +582,19 @@ func TestEngineQueriesReturnCopies(t *testing.T) {
 		Config:            map[string]string{"chat_id": "1"},
 		AuthorizedChatIDs: []string{"1"},
 	})
+	engine.mu.Lock()
+	engine.tasks[0].Manifest.Dependencies.Tasks = []models.TaskDependency{{Slug: "upstream"}}
+	engine.mu.Unlock()
 
 	tasks := engine.Tasks()
 	tasks[0].DisplayName = "Mutated"
 	tasks[0].Manifest.Script.Name = "Mutated"
+	tasks[0].Manifest.Dependencies.Tasks[0].Slug = "mutated"
 	if got := engine.Task(task.ID); got.DisplayName == "Mutated" || got.Manifest.Script.Name == "Mutated" {
 		t.Fatalf("task query returned mutable internal task: %+v", got)
+	}
+	if got := engine.Task(task.ID); got.Manifest.Dependencies.Tasks[0].Slug == "mutated" {
+		t.Fatalf("task query returned mutable dependency config: %+v", got.Manifest.Dependencies.Tasks)
 	}
 
 	history := engine.RunHistory(task.ID)
@@ -586,6 +793,37 @@ runtime:
 schedule:
   expression: "* * * * *"
 `, pythonLine)
+	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+
+	return dir
+}
+
+func writeNamedTaskPackage(t *testing.T, name, script, python, extraManifest string) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	pythonLine := ""
+	if python != "" {
+		pythonLine = fmt.Sprintf("    python_base_interpreter: %q\n", python)
+	}
+	manifest := fmt.Sprintf(`manifest_version: 1
+script:
+  path: ./script.py
+  name: %q
+runtime:
+  environment:
+    strategy: system
+%s  timeout_seconds: 5
+  max_output_kb: 64
+schedule:
+  expression: "* * * * *"
+%s`, name, pythonLine, extraManifest)
 	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}

@@ -434,6 +434,86 @@ delivery:
 	assertIssuePath(t, result.Issues, "delivery.inline_profiles[1].id")
 }
 
+func TestLoad_InvalidDependencies(t *testing.T) {
+	tests := []struct {
+		name       string
+		dependency string
+		path       string
+	}{
+		{
+			name: "missing selector",
+			dependency: `
+    - require_status: success
+`,
+			path: "dependencies.tasks[0]",
+		},
+		{
+			name: "multiple selectors",
+			dependency: `
+    - id: upstream
+      slug: upstream-task
+`,
+			path: "dependencies.tasks[0]",
+		},
+		{
+			name: "invalid status",
+			dependency: `
+    - slug: upstream-task
+      require_status: ready
+`,
+			path: "dependencies.tasks[0].require_status",
+		},
+		{
+			name: "negative max age",
+			dependency: `
+    - slug: upstream-task
+      max_age_seconds: -1
+`,
+			path: "dependencies.tasks[0].max_age_seconds",
+		},
+		{
+			name: "invalid unhealthy policy",
+			dependency: `
+    - slug: upstream-task
+      on_unhealthy: block
+`,
+			path: "dependencies.tasks[0].on_unhealthy",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("pass\n"), 0644); err != nil {
+				t.Fatalf("write script: %v", err)
+			}
+			manifestContent := `
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Invalid Dependencies
+schedule:
+  expression: "0 * * * *"
+dependencies:
+  tasks:
+` + tt.dependency
+			manifestPath := filepath.Join(dir, "test.cronplus.yaml")
+			if err := os.WriteFile(manifestPath, []byte(manifestContent), 0644); err != nil {
+				t.Fatalf("write manifest: %v", err)
+			}
+
+			result, err := Load(manifestPath)
+			if err != nil {
+				t.Fatalf("Load error: %v", err)
+			}
+			if !result.HasErrors() {
+				t.Fatal("should have errors for invalid dependencies")
+			}
+			assertIssuePath(t, result.Issues, tt.path)
+		})
+	}
+}
+
 func assertIssuePath(t *testing.T, issues []ValidationIssue, path string) {
 	t.Helper()
 	for _, issue := range issues {

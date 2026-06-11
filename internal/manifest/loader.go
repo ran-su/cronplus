@@ -301,6 +301,42 @@ func validate(m *models.ScriptManifest, dir string) []ValidationIssue {
 		}
 	}
 
+	for i, dependency := range m.Dependencies.Tasks {
+		path := fmt.Sprintf("dependencies.tasks[%d]", i)
+		hasID := strings.TrimSpace(dependency.ID) != ""
+		hasSlug := strings.TrimSpace(dependency.Slug) != ""
+		if hasID == hasSlug {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     path,
+				Message:  "Specify exactly one of id or slug.",
+			})
+		}
+		if !models.IsValidRunStatus(dependency.RequireStatus) {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     path + ".require_status",
+				Message:  fmt.Sprintf("Unknown status: %q.", dependency.RequireStatus),
+			})
+		}
+		if dependency.MaxAgeSeconds < 0 {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     path + ".max_age_seconds",
+				Message:  "Must be greater than or equal to 0.",
+			})
+		}
+		switch strings.ToLower(strings.TrimSpace(dependency.OnUnhealthy)) {
+		case "skip", "fail":
+		default:
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     path + ".on_unhealthy",
+				Message:  "Must be skip or fail.",
+			})
+		}
+	}
+
 	// Inline delivery profiles
 	seenInlineProfileIDs := make(map[string]int)
 	for i, p := range m.Delivery.InlineProfiles {

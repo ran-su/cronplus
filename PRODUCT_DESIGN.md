@@ -10,7 +10,7 @@ CronPlus makes it easy for humans or LLMs to create small single-purpose Python 
 
 The task package manifest is the source of truth. The web UI imports, reloads, runs, enables/disables, and removes task imports; it does not create task packages or maintain a separate editable task configuration.
 
-The CLI provides the contract surface for AI task authors: `validate` checks a package manifest, `check` prepares the environment and runs the task once, and `schema` prints the embedded JSON Schema.
+The CLI provides the contract surface for AI task authors: `validate` checks a package manifest, `check` prepares the environment and runs the task once as a diagnostic probe, and `schema` prints the embedded JSON Schema. Checks do not create imported-task run history and do not satisfy task dependencies.
 
 Local secret handling stays file/env based for convenience: package-local dotenv files and `env://NAME` references are supported, while OS credential stores are intentionally out of scope for this personal-use product.
 
@@ -96,7 +96,7 @@ cronplus (single Go binary)
 8. **Missed Runs**: Missed scheduled times are skipped; CronPlus does not backfill runs after downtime.
 9. **Resource Cleanup**: Each run uses its own process group and per-run temp/profile/cache directory. CronPlus kills leftover process-group members, scans for detached processes referencing the run directory, and removes run artifacts.
 10. **Diagnostics**: Runs record Python executable, script path, working directory, timeout, process IDs, output bytes/discards, run directory, cleanup results, and structured-result detection.
-11. **Contract Checks**: CLI validation, schema output, and one-shot run checks help AI agents produce valid task packages before import.
+11. **Contract Checks**: CLI validation, schema output, and one-shot run checks help AI agents produce valid task packages before import. One-shot checks are diagnostic only; they do not write imported-task run history.
 12. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`.
 
 ## Distribution

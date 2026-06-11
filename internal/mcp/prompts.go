@@ -123,7 +123,7 @@ Use this package shape:
 - README.md
 - sample_output.json when structured output is useful
 
-The manifest is the source of truth. Do not import the task until the package passes cronplus.task_package.validate. Use cronplus.task_package.check only after the user is ready to run the script once, because check prepares the environment and executes local code.
+The manifest is the source of truth. Do not import the task until the package passes cronplus.task_package.validate. Use cronplus.task_package.check only after the user is ready to run the script once, because check prepares the environment and executes local code. Package checks are diagnostic probes; they do not create imported-task run history, trigger delivery, or satisfy dependencies.
 
 When structured results are expected, make the script print CRONPLUS_RESULT=<json> with status, summary, and optional deliverable/data fields. Supported statuses are success, failure, warning, and skipped.`, goal, packageDir, schedule, deliveryProfile)
 }
@@ -142,7 +142,7 @@ Run ID: %s
 
 %s Review the diagnosis, parsed result, stderr tail, stdout tail, timeout, environment strategy, and cleanup diagnostics. Identify whether the failure is caused by manifest configuration, Python dependencies, script logic, missing secrets, output contract mismatch, timeout, or delivery failure.
 
-Prefer cronplus.task_package.validate after manifest edits. Use cronplus.task_package.check only when ready to execute the package once. Reload the imported task with cronplus.tasks.reload after package files change.`, taskID, runID, runInstruction)
+Prefer cronplus.task_package.validate after manifest edits. Use cronplus.task_package.check only when ready to execute the package once as a diagnostic probe. Checks do not create imported-task run history or satisfy dependencies. Reload the imported task with cronplus.tasks.reload after package files change.`, taskID, runID, runInstruction)
 }
 
 func repairManifestPrompt(args map[string]string) string {
@@ -151,5 +151,5 @@ func repairManifestPrompt(args map[string]string) string {
 
 Package directory: %s
 
-Read cronplus://manifest/schema and inspect the package manifest. Fix schema, schedule, runtime, result_contract, and delivery references as needed. Validate with cronplus.task_package.validate. Do not use cronplus.task_package.check unless the user explicitly wants to prepare the environment and run the script once.`, packageDir)
+Read cronplus://manifest/schema and inspect the package manifest. Fix schema, schedule, runtime, result_contract, and delivery references as needed. Validate with cronplus.task_package.validate. Do not use cronplus.task_package.check unless the user explicitly wants to prepare the environment and run the script once as a diagnostic probe. Checks do not create imported-task run history or satisfy dependencies.`, packageDir)
 }

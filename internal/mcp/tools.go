@@ -65,7 +65,7 @@ func (s *Server) listTools() map[string]any {
 		{
 			Name:        "cronplus.task_package.check",
 			Title:       "Check Task Package",
-			Description: "Validate a CronPlus task package, prepare its environment, and run the script once. This can install dependencies and execute local code.",
+			Description: "Validate a CronPlus task package, prepare its environment, and run the script once as a diagnostic probe. This can install dependencies and execute local code, but does not create imported-task run history or satisfy dependencies.",
 			InputSchema: objectSchema(map[string]any{
 				"path": stringProperty("Absolute path to the CronPlus task package directory."),
 			}, "path"),

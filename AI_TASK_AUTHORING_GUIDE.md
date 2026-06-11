@@ -73,6 +73,7 @@ Field guidance:
 - `missed_run_policy` must be `skip`; CronPlus does not backfill missed runs.
 - `delivery.send_on` supports `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`.
 - `dependencies.tasks` is optional. Each dependency must use exactly one of `slug` or `id`; `require_status` defaults to `success`; `max_age_seconds` is optional; `on_unhealthy` defaults to `skip` and can be `fail`.
+- Dependencies are checked against imported-task run history. `cronplus check` is a diagnostic probe and does not create run history or satisfy dependencies; use **Run Now** on the imported dependency task for that.
 
 ## Python Script Contract
 
@@ -172,6 +173,8 @@ cronplus validate /path/to/my-task
 cronplus check /path/to/my-task
 ```
 
+`cronplus check` prepares the environment and executes the package once, but it is not a scheduled/imported task run. It does not create run history, trigger delivery, or satisfy manifest dependencies.
+
 If running from the CronPlus source tree without an installed binary, use:
 
 ```bash
@@ -254,4 +257,4 @@ result_contract:
 - The script prints a valid final `CRONPLUS_RESULT=` JSON line.
 - The result status is one of `success`, `failure`, `warning`, or `skipped`.
 - The task passes `cronplus validate`.
-- The task passes `cronplus check`.
+- The task passes `cronplus check` when it is safe and useful to execute the package as a diagnostic probe.

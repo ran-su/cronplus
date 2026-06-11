@@ -258,7 +258,7 @@ func fallbackTaskAuthoringGuide() string {
 
 Create a task package directory with script.py, a .cronplus.yaml manifest, optional requirements.txt, README.md, and sample_output.json.
 
-Use cronplus.task_package.validate for manifest-only checks. Use cronplus.task_package.check only when you are ready to prepare the environment and run the script once.
+Use cronplus.task_package.validate for manifest-only checks. Use cronplus.task_package.check only when you are ready to prepare the environment and run the script once. Package checks are diagnostic probes; they do not create imported-task run history or satisfy dependencies.
 
 Scripts should print CRONPLUS_RESULT=<json> when structured output is expected. Supported result statuses are success, failure, warning, and skipped.
 `

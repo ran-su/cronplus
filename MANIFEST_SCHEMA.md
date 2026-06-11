@@ -138,9 +138,11 @@ result_contract:
 
 ## Dependency Semantics
 
-Dependencies are evaluated after a run is reserved and before the script process starts. CronPlus checks the dependency task's latest completed run; an in-progress dependency run does not count until it completes. If the dependency task is missing, has no completed runs, has the wrong latest status, or has a latest matching run older than `max_age_seconds`, the dependent script is not launched.
+Dependencies are evaluated before CronPlus marks the dependent task as running and before the script process starts. CronPlus checks the dependency task's latest completed imported-task run; an in-progress dependency run does not count until it completes. If the dependency task is missing, has no completed runs, has the wrong latest status, or has a latest matching run older than `max_age_seconds`, the dependent script is not launched.
 
-With `on_unhealthy: skip`, CronPlus records the attempt as a completed run with status `skipped`. With `on_unhealthy: fail`, CronPlus records the attempt as status `failure`. In both cases, run history, events, delivery matching, and persistence use the normal completed-run flow.
+With `on_unhealthy: skip`, CronPlus records the attempt as a completed run with status `skipped`. With `on_unhealthy: fail`, CronPlus records the attempt as status `failure`. In both cases, run history, delivery matching, and persistence use the normal completed-run flow, but CronPlus does not publish `run_started` or consume an active-run slot because no script process is launched.
+
+Package checks do not satisfy dependencies. `cronplus check` and the web UI **Check** action run a package as a diagnostic probe and do not create imported-task run history. Use **Run Now** on the imported dependency task to create the successful run record that downstream dependencies require.
 
 ## JSON Schema
 

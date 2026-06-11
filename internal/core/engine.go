@@ -397,10 +397,12 @@ func (e *Engine) StartTaskRunWithID(taskID, trigger string) (string, error) {
 }
 
 type reservedTaskRun struct {
-	task       *models.Task
-	generation int64
-	runID      string
-	startedAt  time.Time
+	task           *models.Task
+	generation     int64
+	runID          string
+	startedAt      time.Time
+	active         bool
+	dependencyGate *dependencyGateResult
 }
 
 type dependencyGateResult struct {
@@ -440,11 +442,6 @@ func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error
 		e.mu.Unlock()
 		return nil, ErrTaskAlreadyRunning
 	}
-	if e.maxConcurrentRuns > 0 && len(e.activeRuns) >= e.maxConcurrentRuns {
-		e.mu.Unlock()
-		return nil, maxConcurrentRunsError(e.maxConcurrentRuns)
-	}
-	e.activeRuns[taskID] = true
 	generation := e.taskGenerations[taskID]
 	if generation == 0 {
 		generation = 1
@@ -453,6 +450,21 @@ func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error
 	taskSnapshot := cloneTask(task)
 	runID := generateID()
 	startedAt := time.Now()
+	if gate := e.evaluateTaskDependenciesLocked(task, startedAt); gate != nil {
+		e.mu.Unlock()
+		return &reservedTaskRun{
+			task:           taskSnapshot,
+			generation:     generation,
+			runID:          runID,
+			startedAt:      startedAt,
+			dependencyGate: gate,
+		}, nil
+	}
+	if e.maxConcurrentRuns > 0 && len(e.activeRuns) >= e.maxConcurrentRuns {
+		e.mu.Unlock()
+		return nil, maxConcurrentRunsError(e.maxConcurrentRuns)
+	}
+	e.activeRuns[taskID] = true
 	e.mu.Unlock()
 
 	e.Broker.Publish("run_started", map[string]string{
@@ -461,7 +473,7 @@ func (e *Engine) reserveTaskRun(taskID, trigger string) (*reservedTaskRun, error
 		"runID":   runID,
 	})
 
-	return &reservedTaskRun{task: taskSnapshot, generation: generation, runID: runID, startedAt: startedAt}, nil
+	return &reservedTaskRun{task: taskSnapshot, generation: generation, runID: runID, startedAt: startedAt, active: true}, nil
 }
 
 func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *models.RunRecord {
@@ -472,11 +484,10 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 	runID := reserved.runID
 
 	var outcome *models.RunOutcome
-	checkedAt := time.Now()
-	finishedAt := checkedAt
-	if gate := e.evaluateTaskDependencies(task, checkedAt); gate != nil {
+	finishedAt := time.Now()
+	if reserved.dependencyGate != nil {
 		finishedAt = time.Now()
-		outcome = dependencyGateOutcome(gate, startedAt, finishedAt)
+		outcome = dependencyGateOutcome(reserved.dependencyGate, startedAt, finishedAt)
 	} else {
 		// Run the script (this blocks — called in a goroutine by the scheduler/API)
 		outcome = RunScriptWithOptions(task.Manifest, manifestDir, RunScriptOptions{
@@ -520,7 +531,9 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 
 	// Store run history
 	e.mu.Lock()
-	delete(e.activeRuns, taskID)
+	if reserved.active {
+		delete(e.activeRuns, taskID)
+	}
 	if e.taskGenerationMatchesLocked(taskID, reserved.generation) {
 		history := e.runHistory[taskID]
 		history = append([]models.RunRecord{cloneRunRecord(*record)}, history...)
@@ -547,13 +560,15 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 }
 
 func (e *Engine) evaluateTaskDependencies(task *models.Task, now time.Time) *dependencyGateResult {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.evaluateTaskDependenciesLocked(task, now)
+}
+
+func (e *Engine) evaluateTaskDependenciesLocked(task *models.Task, now time.Time) *dependencyGateResult {
 	if task == nil || task.Manifest == nil || len(task.Manifest.Dependencies.Tasks) == 0 {
 		return nil
 	}
-
-	e.mu.RLock()
-	defer e.mu.RUnlock()
-
 	for i, dependency := range task.Manifest.Dependencies.Tasks {
 		result := e.evaluateTaskDependencyLocked(i, dependency, now)
 		if result != nil {

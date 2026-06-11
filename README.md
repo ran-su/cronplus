@@ -120,7 +120,7 @@ Supported statuses are `success`, `failure`, `warning`, and `skipped`; `failed` 
 
 ### Task Dependencies
 
-Tasks can declare prerequisite tasks in their manifest. CronPlus checks dependencies after reserving a run but before launching the script. The check uses the dependency task's latest completed run; an in-progress run does not count until it completes.
+Tasks can declare prerequisite tasks in their manifest. CronPlus checks dependencies before marking the dependent task as running and before launching its script. The check uses the dependency task's latest completed imported-task run; an in-progress run does not count until it completes.
 
 ```yaml
 dependencies:
@@ -131,7 +131,9 @@ dependencies:
       on_unhealthy: skip
 ```
 
-Each dependency uses exactly one of `slug` or `id`. `require_status` defaults to `success`; `max_age_seconds` is optional and disables freshness checks when omitted or set to `0`; `on_unhealthy` defaults to `skip` and can also be `fail`. When a dependency is unhealthy, CronPlus records a completed run with status `skipped` or `failure` without launching the dependent script.
+Each dependency uses exactly one of `slug` or `id`. `require_status` defaults to `success`; `max_age_seconds` is optional and disables freshness checks when omitted or set to `0`; `on_unhealthy` defaults to `skip` and can also be `fail`. When a dependency is unhealthy, CronPlus records a completed run with status `skipped` or `failure` without launching the dependent script, without publishing a `run_started` event, and without consuming an active-run slot.
+
+Package checks do not satisfy dependencies. `cronplus check` and the web UI **Check** action validate a package, prepare its environment, and run its script as a diagnostic probe, but they do not create imported-task run history. Use **Run Now** on the imported dependency task to create the successful run record that downstream dependencies require.
 
 ### Task Lifecycle
 
@@ -140,6 +142,7 @@ CronPlus does not create task packages and does not edit task files. AI agents o
 | Action | Meaning |
 |---|---|
 | **Import** | Register a task package by directory path. Returns immediately after manifest validation; `managed_venv` environment setup continues in the background. |
+| **Check Package** | Validate a package, prepare its environment, and run its script once as a diagnostic probe. Does not create imported-task run history and does not satisfy task dependencies. |
 | **Reload Manifest** | Re-read the package manifest from disk, preserving task ID and run history |
 | **Run Now** | Execute the imported task immediately. Blocked while environment setup is `pending` or `failed` for `managed_venv` tasks. |
 | **Remove Import** | Unregister the task from CronPlus without deleting package files |
@@ -154,7 +157,8 @@ The binary also includes small commands that are useful for AI-generated task pa
 # Validate the manifest contract
 cronplus validate /path/to/my-task
 
-# Validate, prepare environment, run once, and verify structured output when required
+# Validate, prepare environment, run once, and verify structured output when required.
+# This is a diagnostic check; it does not create imported-task run history.
 cronplus check /path/to/my-task
 
 # Print the embedded JSON Schema
@@ -214,7 +218,7 @@ MCP tools include:
 | `cronplus.status` | Read daemon status |
 | `cronplus.tasks.list` / `cronplus.tasks.get` | Inspect imported tasks |
 | `cronplus.task_package.validate` | Validate a task manifest without running code |
-| `cronplus.task_package.check` | Validate, prepare the environment, and run the script once |
+| `cronplus.task_package.check` | Validate, prepare the environment, and run the script once as a diagnostic probe. Does not create imported-task run history or satisfy dependencies |
 | `cronplus.tasks.import` / `reload` / `set_enabled` / `remove` | Manage imported tasks |
 | `cronplus.runs.start` / `get` / `wait` | Start and inspect manual runs |
 | `cronplus.deliveries.test` | Send a test message through an existing delivery profile |

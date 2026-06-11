@@ -360,6 +360,83 @@ func TestRunTaskSkipsWhenDependencyMissing(t *testing.T) {
 	}
 }
 
+func TestRunTaskDependencySkipDoesNotStartRun(t *testing.T) {
+	dir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - id: missing-task
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+	events := engine.Broker.Subscribe()
+	defer engine.Broker.Unsubscribe(events)
+
+	record, err := engine.RunTask(task.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "skipped" {
+		t.Fatalf("status = %q, want skipped", got)
+	}
+	if engine.IsRunning(task.ID) {
+		t.Fatal("dependency skip should not mark task as running")
+	}
+
+	var eventTypes []string
+	for {
+		select {
+		case event := <-events:
+			eventTypes = append(eventTypes, event.Type)
+		default:
+			if containsString(eventTypes, "run_started") {
+				t.Fatalf("events = %v, dependency skip should not publish run_started", eventTypes)
+			}
+			if !containsString(eventTypes, "run_completed") {
+				t.Fatalf("events = %v, dependency skip should publish run_completed", eventTypes)
+			}
+			return
+		}
+	}
+}
+
+func TestRunTaskDependencySkipDoesNotConsumeGlobalConcurrency(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	activeDir := writeNamedTaskPackage(t, "Active Task", "import time\ntime.sleep(1)\n", python, "")
+	skipDir := writeNamedTaskPackage(t, "Skipped Task", "raise SystemExit('should not run')\n", "", `dependencies:
+  tasks:
+    - id: missing-task
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine.maxConcurrentRuns = 1
+	activeTask, err := engine.ImportTask(activeDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask active: %v", err)
+	}
+	skippedTask, err := engine.ImportTask(skipDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask skipped: %v", err)
+	}
+
+	if err := engine.StartTaskRun(activeTask.ID, "manual"); err != nil {
+		t.Fatalf("StartTaskRun active: %v", err)
+	}
+	waitForActiveRunDetail(t, engine, activeTask.ID)
+
+	record, err := engine.RunTask(skippedTask.ID, "manual")
+	if err != nil {
+		t.Fatalf("RunTask skipped should not be blocked by max concurrency: %v", err)
+	}
+	if got := models.RunStatusFromOutcome(record.Outcome); got != "skipped" {
+		t.Fatalf("status = %q, want skipped", got)
+	}
+}
+
 func TestRunTaskDependencySkipSatisfiesStructuredResultContract(t *testing.T) {
 	dir := writeNamedTaskPackage(t, "Dependent Task", "raise SystemExit('should not run')\n", "", `dependencies:
   tasks:
@@ -767,6 +844,15 @@ func waitForSignal(t *testing.T, ch <-chan struct{}, timeout time.Duration, mess
 	case <-time.After(timeout):
 		t.Fatal(message)
 	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func writeTaskPackage(t *testing.T, script, python string) string {

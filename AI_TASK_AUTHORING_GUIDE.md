@@ -145,18 +145,21 @@ CronPlus injects these environment variables during runs:
 
 ## Delivery Template Guidance
 
-If the manifest includes `delivery.message_template`, use Go template syntax:
+If the manifest includes `delivery.message_template`, use Go `text/template` syntax:
 
 ```yaml
 delivery:
   profiles: [my-telegram]
   send_on: [failure, warning]
   message_template: |
-    {{message}}
-    Count: {{details.count}}
+    {{with .body}}{{.}}{{else}}{{.summary}}{{end}}
 ```
 
-The parsed result JSON object is the template root. If the script emits `{"message":"ok","details":{"count":3}}`, the manifest can use `{{message}}` and `{{details.count}}`. CronPlus sends only when the rendered template is not empty.
+Standard template actions and built-ins are available, including `if`, `else`, `with`, `range`, `index`, `len`, `printf`, and comparisons such as `eq` and `ne`. CronPlus does not register custom template functions. Missing fields are errors, so reference optional fields with `with` or make sure the script always emits them.
+
+The parsed result JSON object contributes fields to the template root, and CronPlus also adds defaults such as `.task`, `.status`, `.summary`, `.body`, `.data`, `.stdout`, `.stderr`, `.exitcode`, and `.duration`. PascalCase aliases such as `.TaskName`, `.Status`, `.Summary`, `.Body`, and `.Data` are also available.
+
+Simple field outputs can use shorthand. If the script emits `{"message":"ok","details":{"count":3}}`, the manifest can use `{{message}}` and `{{details.count}}`; CronPlus rewrites those to dotted paths. Template actions should use normal Go template syntax, such as `{{with .data}}...{{end}}`. CronPlus sends only when the rendered template is not empty.
 
 Only use inline delivery profiles when the user explicitly wants the package to define them. Telegram config keys are `bot_token` and `chat_id`. Inbound commands are enabled only on daemon delivery profiles, not inline manifest profiles.
 

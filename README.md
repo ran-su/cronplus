@@ -118,6 +118,16 @@ print(f"CRONPLUS_RESULT={json.dumps(result)}")
 
 Supported statuses are `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`. When CronPlus can parse a structured result with a valid status, that status is authoritative for run state and delivery matching, even if the process exits non-zero. Unknown structured result statuses are treated as `failure`. If there is no parseable structured result, CronPlus falls back to the script exit code.
 
+### Delivery Templates
+
+`delivery.message_template` uses Go `text/template` syntax with standard actions and built-ins such as `if`, `with`, `range`, `index`, `len`, `printf`, `eq`, and `ne`. CronPlus does not add custom template functions, and missing fields are render errors.
+
+The template root includes parsed result fields plus defaults such as `.task`, `.status`, `.summary`, `.body`, `.data`, `.stdout`, `.stderr`, `.exitcode`, and `.duration`. Simple field output can use shorthand like `{{summary}}` or `{{data.price}}`; control actions should use normal dotted syntax:
+
+```gotemplate
+{{with .body}}{{.}}{{else}}{{.summary}}{{end}}
+```
+
 ### Task Dependencies
 
 Tasks can declare prerequisite tasks in their manifest. CronPlus checks dependencies before marking the dependent task as running and before launching its script. The check uses the dependency task's latest completed imported-task run; an in-progress run does not count until it completes.

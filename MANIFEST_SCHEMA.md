@@ -136,6 +136,18 @@ result_contract:
 | `dependencies.tasks[].on_unhealthy` | `skip` |
 | `result_contract.result_prefix` | `CRONPLUS_RESULT=` |
 
+## Delivery Template Semantics
+
+`delivery.message_template` is rendered with Go's `text/template` package and no custom function map. Standard template actions and built-ins are available, including `if`, `else`, `with`, `range`, `index`, `len`, `printf`, and comparisons such as `eq` and `ne`.
+
+CronPlus renders templates with `missingkey=error`; referencing a missing field makes delivery rendering fail instead of silently producing an empty value. The template root contains parsed result fields plus CronPlus defaults such as `.task`, `.status`, `.summary`, `.body`, `.data`, `.stdout`, `.stderr`, `.exitcode`, and `.duration`. PascalCase aliases such as `.TaskName`, `.Status`, `.Summary`, `.Body`, and `.Data` are also available.
+
+Simple field outputs can use shorthand (`{{summary}}`, `{{data.price}}`), which CronPlus rewrites to dotted paths. Template actions should use normal Go template syntax:
+
+```gotemplate
+{{with .body}}{{.}}{{else}}{{.summary}}{{end}}
+```
+
 ## Dependency Semantics
 
 Dependencies are evaluated before CronPlus marks the dependent task as running and before the script process starts. CronPlus checks the dependency task's latest completed imported-task run; an in-progress dependency run does not count until it completes. If the dependency task is missing, has no completed runs, has the wrong latest status, or has a latest matching run older than `max_age_seconds`, the dependent script is not launched.

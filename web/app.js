@@ -1416,7 +1416,10 @@ function promptImportTask() {
                 <h2>Import Task Package</h2>
                 <div class="form-group">
                     <label class="form-label">Package Directory</label>
-                    <input class="form-input" id="import-path-input" placeholder="/path/to/my-task" style="font-family:var(--font-mono)" autofocus>
+                    <div class="path-picker-row">
+                        <input class="form-input" id="import-path-input" placeholder="/path/to/my-task" style="font-family:var(--font-mono)" autofocus>
+                        <button class="btn" id="import-pick-button" onclick="pickImportDirectory()">Browse</button>
+                    </div>
                     <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Full path to a directory containing a .cronplus.yaml manifest</p>
                 </div>
                 <div id="import-error" style="color:var(--danger);font-size:13px;display:none;margin-bottom:12px"></div>
@@ -1434,6 +1437,45 @@ function promptImportTask() {
     document.getElementById('import-path-input').addEventListener('keydown', e => {
         if (e.key === 'Enter') doImportTask();
     });
+}
+
+async function pickImportDirectory() {
+    const input = document.getElementById('import-path-input');
+    const button = document.getElementById('import-pick-button');
+    const errEl = document.getElementById('import-error');
+    const checkEl = document.getElementById('import-check-result');
+    if (!input || !button) return;
+
+    const previousText = button.textContent;
+    button.disabled = true;
+    button.textContent = 'Browsing...';
+    if (errEl) errEl.style.display = 'none';
+
+    try {
+        const result = await api('POST', '/api/system/pick-directory');
+        if (!result || result.canceled) return;
+        if (result.error) {
+            const message = result.error === 'picker_unavailable'
+                ? 'System folder picker is not available here. Paste the full path instead.'
+                : result.message || 'Folder picker failed';
+            if (errEl) {
+                errEl.textContent = message;
+                errEl.style.display = 'block';
+            } else {
+                toast(message, 'error');
+            }
+            return;
+        }
+        if (result.path) {
+            input.value = result.path;
+            input.style.borderColor = '';
+            if (checkEl) checkEl.innerHTML = '';
+            input.focus();
+        }
+    } finally {
+        button.disabled = false;
+        button.textContent = previousText;
+    }
 }
 
 async function checkImportPackage() {

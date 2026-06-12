@@ -27,6 +27,7 @@ func RoutesWithInfo(mux *http.ServeMux, engine *core.Engine, info ServerInfo) {
 		info.MaxConcurrentRuns = engine.MaxConcurrentRuns()
 	}
 	mux.HandleFunc("GET /api/status", handleGetStatus(engine, info))
+	mux.HandleFunc("POST /api/system/pick-directory", handlePickDirectory(pickDirectory))
 	mux.HandleFunc("GET /api/tasks", handleGetTasks(engine))
 	mux.HandleFunc("POST /api/tasks/check", handleCheckTaskPackage(engine))
 	mux.HandleFunc("GET /api/tasks/{id}", handleGetTask(engine))

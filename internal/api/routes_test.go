@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -202,6 +203,65 @@ func TestCheckTaskPackageEndpoint(t *testing.T) {
 	}
 	if len(response.NextRuns) == 0 {
 		t.Fatalf("nextRuns empty in response: %+v", response)
+	}
+}
+
+func TestPickDirectoryEndpointReturnsSelectedPath(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/system/pick-directory", handlePickDirectory(func(_ context.Context) (directoryPickerResult, error) {
+		return directoryPickerResult{Path: " /tmp/task-package \n"}, nil
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/system/pick-directory", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response directoryPickerResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if response.Path != "/tmp/task-package" || response.Canceled {
+		t.Fatalf("response = %+v, want selected path", response)
+	}
+}
+
+func TestPickDirectoryEndpointReportsCanceled(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/system/pick-directory", handlePickDirectory(func(_ context.Context) (directoryPickerResult, error) {
+		return directoryPickerResult{Canceled: true}, nil
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/system/pick-directory", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response directoryPickerResult
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !response.Canceled || response.Path != "" {
+		t.Fatalf("response = %+v, want canceled", response)
+	}
+}
+
+func TestPickDirectoryEndpointReportsUnavailable(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /api/system/pick-directory", handlePickDirectory(func(_ context.Context) (directoryPickerResult, error) {
+		return directoryPickerResult{}, errDirectoryPickerUnavailable
+	}))
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/system/pick-directory", nil)
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotImplemented {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusNotImplemented, rec.Body.String())
 	}
 }
 

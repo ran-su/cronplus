@@ -456,6 +456,11 @@ body {
     background: rgba(255,255,255,0.08); 
 }
 
+.btn:disabled {
+    cursor: wait;
+    opacity: 0.65;
+}
+
 .btn-primary {
     background: var(--accent);
     border: none;
@@ -601,6 +606,20 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 
 .inline-form-action {
     margin-top: 8px;
+}
+
+.path-picker-row {
+    display: flex;
+    gap: 8px;
+    align-items: stretch;
+}
+
+.path-picker-row .form-input {
+    min-width: 0;
+}
+
+.path-picker-row .btn {
+    flex-shrink: 0;
 }
 
 /* ===== Detail Page ===== */
@@ -946,6 +965,12 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     }
     .detail-actions .btn {
         padding: 8px 12px;
+    }
+    .path-picker-row {
+        flex-direction: column;
+    }
+    .path-picker-row .btn {
+        justify-content: center;
     }
 }
 

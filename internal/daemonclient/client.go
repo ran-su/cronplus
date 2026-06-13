@@ -82,6 +82,11 @@ func (c *Client) Post(path string, body any) (any, error) {
 	return c.Request(http.MethodPost, path, body)
 }
 
+// Put sends an authenticated PUT request and decodes the JSON response.
+func (c *Client) Put(path string, body any) (any, error) {
+	return c.Request(http.MethodPut, path, body)
+}
+
 // Delete sends an authenticated DELETE request and decodes the JSON response.
 func (c *Client) Delete(path string) (any, error) {
 	return c.Request(http.MethodDelete, path, nil)

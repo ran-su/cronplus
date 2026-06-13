@@ -260,6 +260,8 @@ Create a task package directory with script.py, a .cronplus.yaml manifest, optio
 
 Use cronplus.task_package.validate for manifest-only checks. Use cronplus.task_package.check only when you are ready to prepare the environment and run the script once. Package checks are diagnostic probes; they do not create imported-task run history or satisfy dependencies.
 
+After import, use cronplus.tasks.check for an imported task diagnostic probe and cronplus.runs.start/list/get/wait for real imported-task run history. Delivery profile MCP tools redact secrets on read; cronplus.deliveries.update preserves omitted secrets and existing non-secret fields.
+
 Scripts should print CRONPLUS_RESULT=<json> when structured output is expected. Supported result statuses are success, failure, warning, and skipped.
 `
 }

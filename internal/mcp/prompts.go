@@ -142,7 +142,7 @@ Run ID: %s
 
 %s Review the diagnosis, parsed result, stderr tail, stdout tail, timeout, environment strategy, and cleanup diagnostics. Identify whether the failure is caused by manifest configuration, Python dependencies, script logic, missing secrets, output contract mismatch, timeout, or delivery failure.
 
-Prefer cronplus.task_package.validate after manifest edits. Use cronplus.task_package.check only when ready to execute the package once as a diagnostic probe. Checks do not create imported-task run history or satisfy dependencies. Reload the imported task with cronplus.tasks.reload after package files change.`, taskID, runID, runInstruction)
+Prefer cronplus.task_package.validate after manifest edits. Use cronplus.tasks.check for an imported task diagnostic probe, or cronplus.task_package.check for an arbitrary package path. Checks do not create imported-task run history or satisfy dependencies. Reload the imported task with cronplus.tasks.reload after package files change.`, taskID, runID, runInstruction)
 }
 
 func repairManifestPrompt(args map[string]string) string {

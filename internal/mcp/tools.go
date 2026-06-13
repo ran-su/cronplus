@@ -83,6 +83,16 @@ func (s *Server) listTools() map[string]any {
 			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 		},
 		{
+			Name:        "cronplus.tasks.delivery_preview",
+			Title:       "Preview Task Delivery",
+			Description: "Render the delivery message that would be sent for an imported task's latest run without sending it.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
 			Name:        "cronplus.tasks.import",
 			Title:       "Import Task",
 			Description: "Import a validated CronPlus task package into the local daemon. This registers the task but does not delete or edit package files.",
@@ -178,6 +188,75 @@ func (s *Server) listTools() map[string]any {
 			OutputSchema: objectOutputSchema(),
 			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 		},
+		{
+			Name:         "cronplus.deliveries.list",
+			Title:        "List Deliveries",
+			Description:  "List delivery profiles with sensitive configuration redacted by the daemon.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:         "cronplus.deliveries.create",
+			Title:        "Create Delivery",
+			Description:  "Create a Telegram delivery profile. Secrets are sent to the local daemon but are not exposed by list/read responses.",
+			InputSchema:  objectSchema(deliveryProfileInputProperties(false), "name", "bot_token", "chat_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+		},
+		{
+			Name:         "cronplus.deliveries.update",
+			Title:        "Update Delivery",
+			Description:  "Update a delivery profile. Omitted non-secret fields keep their current values; omitted bot_token or chat_id keep existing secrets.",
+			InputSchema:  objectSchema(deliveryProfileInputProperties(true), "profile_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": true},
+		},
+		{
+			Name:        "cronplus.deliveries.set_commands_enabled",
+			Title:       "Set Delivery Commands Enabled",
+			Description: "Enable or disable inbound Telegram commands for a delivery profile.",
+			InputSchema: objectSchema(map[string]any{
+				"profile_id": stringProperty("CronPlus delivery profile ID."),
+				"enabled":    map[string]any{"type": "boolean", "description": "True to enable inbound commands, false to disable them."},
+			}, "profile_id", "enabled"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": true, "openWorldHint": false},
+		},
+		{
+			Name:        "cronplus.deliveries.remove",
+			Title:       "Remove Delivery",
+			Description: "Delete a delivery profile from CronPlus.",
+			InputSchema: objectSchema(map[string]any{
+				"profile_id": stringProperty("CronPlus delivery profile ID."),
+			}, "profile_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
+		},
+		{
+			Name:         "cronplus.commands.list",
+			Title:        "List Commands",
+			Description:  "List recent inbound command log records.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:         "cronplus.commands.clear",
+			Title:        "Clear Commands",
+			Description:  "Clear the inbound command log.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+		},
+		{
+			Name:         "cronplus.system.pick_directory",
+			Title:        "Pick Directory",
+			Description:  "Open the daemon host's native system directory picker and return the selected absolute path when supported.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": false},
+		},
 	}
 
 	return map[string]any{
@@ -256,6 +335,19 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 		}
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Post("/api/tasks/"+pathID(args.TaskID)+"/check", nil)
+		}), nil
+	case "cronplus.tasks.delivery_preview":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/tasks/" + pathID(args.TaskID) + "/delivery-preview")
 		}), nil
 	case "cronplus.tasks.import":
 		var args struct {
@@ -393,6 +485,88 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Post("/api/deliveries/"+pathID(args.ProfileID)+"/test", body)
 		}), nil
+	case "cronplus.deliveries.list":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/deliveries")
+		}), nil
+	case "cronplus.deliveries.create":
+		var args deliveryProfileArgs
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.Name) == "" {
+			return nil, invalidParams("name is required")
+		}
+		if strings.TrimSpace(args.BotToken) == "" {
+			return nil, invalidParams("bot_token is required")
+		}
+		if strings.TrimSpace(args.ChatID) == "" {
+			return nil, invalidParams("chat_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/deliveries", createDeliveryProfileBody(args))
+		}), nil
+	case "cronplus.deliveries.update":
+		var args deliveryProfileArgs
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.ProfileID) == "" {
+			return nil, invalidParams("profile_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			body, err := updateDeliveryProfileBody(c, args)
+			if err != nil {
+				return nil, err
+			}
+			return c.Put("/api/deliveries/"+pathID(args.ProfileID), body)
+		}), nil
+	case "cronplus.deliveries.set_commands_enabled":
+		var args struct {
+			ProfileID string `json:"profile_id"`
+			Enabled   *bool  `json:"enabled"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.ProfileID) == "" {
+			return nil, invalidParams("profile_id is required")
+		}
+		if args.Enabled == nil {
+			return nil, invalidParams("enabled is required")
+		}
+		action := "disable"
+		if *args.Enabled {
+			action = "enable"
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/deliveries/"+pathID(args.ProfileID)+"/commands/"+action, nil)
+		}), nil
+	case "cronplus.deliveries.remove":
+		var args struct {
+			ProfileID string `json:"profile_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.ProfileID) == "" {
+			return nil, invalidParams("profile_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Delete("/api/deliveries/" + pathID(args.ProfileID))
+		}), nil
+	case "cronplus.commands.list":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/commands")
+		}), nil
+	case "cronplus.commands.clear":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Delete("/api/commands")
+		}), nil
+	case "cronplus.system.pick_directory":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/system/pick-directory", nil)
+		}), nil
 	default:
 		return nil, unknownTool(call.Name)
 	}
@@ -403,6 +577,18 @@ type runLookupArgs struct {
 	RunID  string `json:"run_id"`
 }
 
+type deliveryProfileArgs struct {
+	ProfileID              string   `json:"profile_id"`
+	ID                     string   `json:"id"`
+	Name                   string   `json:"name"`
+	DriverType             string   `json:"driver_type"`
+	Enabled                *bool    `json:"enabled"`
+	BotToken               string   `json:"bot_token"`
+	ChatID                 string   `json:"chat_id"`
+	InboundCommandsEnabled *bool    `json:"inbound_commands_enabled"`
+	AuthorizedChatIDs      []string `json:"authorized_chat_ids"`
+}
+
 func (a runLookupArgs) validate() *rpcError {
 	if strings.TrimSpace(a.TaskID) == "" {
 		return invalidParams("task_id is required")
@@ -411,6 +597,148 @@ func (a runLookupArgs) validate() *rpcError {
 		return invalidParams("run_id is required")
 	}
 	return nil
+}
+
+func createDeliveryProfileBody(args deliveryProfileArgs) map[string]any {
+	driverType := strings.TrimSpace(args.DriverType)
+	if driverType == "" {
+		driverType = "telegram"
+	}
+	enabled := true
+	if args.Enabled != nil {
+		enabled = *args.Enabled
+	}
+	inboundCommandsEnabled := false
+	if args.InboundCommandsEnabled != nil {
+		inboundCommandsEnabled = *args.InboundCommandsEnabled
+	}
+
+	body := map[string]any{
+		"name":                   strings.TrimSpace(args.Name),
+		"driverType":             driverType,
+		"enabled":                enabled,
+		"inboundCommandsEnabled": inboundCommandsEnabled,
+		"config": map[string]string{
+			"bot_token": strings.TrimSpace(args.BotToken),
+			"chat_id":   strings.TrimSpace(args.ChatID),
+		},
+	}
+	if id := strings.TrimSpace(args.ID); id != "" {
+		body["id"] = id
+	}
+	if args.AuthorizedChatIDs != nil {
+		body["authorizedChatIDs"] = normalizedStringSlice(args.AuthorizedChatIDs)
+	}
+	return body
+}
+
+func updateDeliveryProfileBody(client *daemonclient.Client, args deliveryProfileArgs) (map[string]any, error) {
+	profile, err := fetchDeliveryProfile(client, args.ProfileID)
+	if err != nil {
+		return nil, err
+	}
+
+	name := stringField(profile, "name")
+	if strings.TrimSpace(args.Name) != "" {
+		name = strings.TrimSpace(args.Name)
+	}
+	driverType := stringField(profile, "driverType")
+	if driverType == "" {
+		driverType = "telegram"
+	}
+	if strings.TrimSpace(args.DriverType) != "" {
+		driverType = strings.TrimSpace(args.DriverType)
+	}
+	enabled := boolField(profile, "enabled")
+	if args.Enabled != nil {
+		enabled = *args.Enabled
+	}
+	inboundCommandsEnabled := boolField(profile, "inboundCommandsEnabled")
+	if args.InboundCommandsEnabled != nil {
+		inboundCommandsEnabled = *args.InboundCommandsEnabled
+	}
+	authorizedChatIDs := stringSliceField(profile, "authorizedChatIDs")
+	if args.AuthorizedChatIDs != nil {
+		authorizedChatIDs = normalizedStringSlice(args.AuthorizedChatIDs)
+	}
+
+	config := map[string]string{}
+	if strings.TrimSpace(args.BotToken) != "" {
+		config["bot_token"] = strings.TrimSpace(args.BotToken)
+	}
+	if strings.TrimSpace(args.ChatID) != "" {
+		config["chat_id"] = strings.TrimSpace(args.ChatID)
+	}
+
+	return map[string]any{
+		"name":                   name,
+		"driverType":             driverType,
+		"enabled":                enabled,
+		"inboundCommandsEnabled": inboundCommandsEnabled,
+		"authorizedChatIDs":      authorizedChatIDs,
+		"config":                 config,
+	}, nil
+}
+
+func fetchDeliveryProfile(client *daemonclient.Client, profileID string) (map[string]any, error) {
+	result, err := client.Get("/api/deliveries")
+	if err != nil {
+		return nil, err
+	}
+	resultMap, ok := result.(map[string]any)
+	if !ok {
+		return nil, &daemonclient.Error{Code: "invalid_response", Message: "delivery profile list response was not an object"}
+	}
+	profiles, ok := resultMap["profiles"].([]any)
+	if !ok {
+		return nil, &daemonclient.Error{Code: "invalid_response", Message: "delivery profile list response did not include profiles"}
+	}
+	profileID = strings.TrimSpace(profileID)
+	for _, raw := range profiles {
+		profile, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringField(profile, "id") == profileID {
+			return profile, nil
+		}
+	}
+	return nil, &daemonclient.Error{Code: "profile_not_found", Message: "delivery profile not found: " + profileID}
+}
+
+func stringField(m map[string]any, key string) string {
+	value, _ := m[key].(string)
+	return value
+}
+
+func boolField(m map[string]any, key string) bool {
+	value, _ := m[key].(bool)
+	return value
+}
+
+func stringSliceField(m map[string]any, key string) []string {
+	raw, ok := m[key].([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, item := range raw {
+		if value, ok := item.(string); ok {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func normalizedStringSlice(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, value := range in {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func (s *Server) daemonTool(fn func(*daemonclient.Client) (any, error)) any {
@@ -569,6 +897,24 @@ func stringProperty(description string) map[string]any {
 		"type":        "string",
 		"description": description,
 	}
+}
+
+func deliveryProfileInputProperties(includeProfileID bool) map[string]any {
+	properties := map[string]any{
+		"id":                       stringProperty("Optional delivery profile ID for creation. If omitted, CronPlus derives one from the name."),
+		"name":                     stringProperty("Delivery profile name."),
+		"driver_type":              stringProperty("Delivery driver type. Defaults to telegram; currently only telegram is supported."),
+		"enabled":                  map[string]any{"type": "boolean", "description": "Whether this delivery profile is enabled. Defaults to true on create; omitted values are preserved on update."},
+		"bot_token":                stringProperty("Telegram bot token. Required on create; omitted values are preserved on update."),
+		"chat_id":                  stringProperty("Telegram chat ID. Required on create; omitted values are preserved on update."),
+		"inbound_commands_enabled": map[string]any{"type": "boolean", "description": "Whether inbound Telegram commands are enabled for this profile."},
+		"authorized_chat_ids":      map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "Optional allow-list of chat IDs authorized to issue inbound commands."},
+	}
+	if includeProfileID {
+		properties["profile_id"] = stringProperty("CronPlus delivery profile ID to update.")
+		delete(properties, "id")
+	}
+	return properties
 }
 
 func readOnlyAnnotations() map[string]any {

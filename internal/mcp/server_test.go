@@ -142,6 +142,187 @@ func TestRunsListToolCallsDaemonEndpoint(t *testing.T) {
 	}
 }
 
+func TestTaskDeliveryPreviewToolCallsDaemonEndpoint(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/tasks/task-1/delivery-preview" {
+			t.Fatalf("path = %s, want delivery preview endpoint", r.URL.Path)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"taskID":"task-1","runID":"run-1","message":"ready"}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"cronplus.tasks.delivery_preview","arguments":{"task_id":"task-1"}}}`)
+	result := responseResult(t, response)
+
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+	structured := result["structuredContent"].(map[string]any)
+	if structured["message"] != "ready" {
+		t.Fatalf("message = %v, want ready", structured["message"])
+	}
+}
+
+func TestDeliveryCreateToolCallsDaemonEndpoint(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/deliveries" {
+			t.Fatalf("path = %s, want create delivery endpoint", r.URL.Path)
+		}
+		body := requestBodyMap(t, r)
+		if body["name"] != "Telegram" || body["driverType"] != "telegram" || body["enabled"] != true {
+			t.Fatalf("body = %+v, want normalized telegram profile", body)
+		}
+		config := body["config"].(map[string]any)
+		if config["bot_token"] != "token" || config["chat_id"] != "chat" {
+			t.Fatalf("config = %+v, want token and chat", config)
+		}
+		return jsonHTTPResponse(http.StatusCreated, `{"id":"telegram"}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":6,"method":"tools/call","params":{"name":"cronplus.deliveries.create","arguments":{"name":"Telegram","bot_token":"token","chat_id":"chat"}}}`)
+	result := responseResult(t, response)
+
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+}
+
+func TestDeliveryUpdateToolPreservesOmittedProfileState(t *testing.T) {
+	requestCount := 0
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodGet || r.URL.Path != "/api/deliveries" {
+				t.Fatalf("request 1 = %s %s, want GET /api/deliveries", r.Method, r.URL.Path)
+			}
+			return jsonHTTPResponse(http.StatusOK, `{"profiles":[{"id":"telegram","name":"Old","driverType":"telegram","enabled":true,"inboundCommandsEnabled":true,"authorizedChatIDs":["1"]}]}`), nil
+		case 2:
+			if r.Method != http.MethodPut || r.URL.Path != "/api/deliveries/telegram" {
+				t.Fatalf("request 2 = %s %s, want PUT /api/deliveries/telegram", r.Method, r.URL.Path)
+			}
+			body := requestBodyMap(t, r)
+			if body["name"] != "New" || body["enabled"] != true || body["inboundCommandsEnabled"] != true {
+				t.Fatalf("body = %+v, want renamed profile with booleans preserved", body)
+			}
+			authorized := body["authorizedChatIDs"].([]any)
+			if len(authorized) != 1 || authorized[0] != "1" {
+				t.Fatalf("authorizedChatIDs = %+v, want preserved chat ID", authorized)
+			}
+			config := body["config"].(map[string]any)
+			if _, ok := config["bot_token"]; ok {
+				t.Fatalf("config = %+v, want omitted bot token preserved by daemon", config)
+			}
+			if config["chat_id"] != "new-chat" {
+				t.Fatalf("config = %+v, want updated chat ID", config)
+			}
+			return jsonHTTPResponse(http.StatusOK, `{"ok":true}`), nil
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestCount, r.Method, r.URL.Path)
+			return nil, nil
+		}
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"cronplus.deliveries.update","arguments":{"profile_id":"telegram","name":"New","chat_id":"new-chat"}}}`)
+	result := responseResult(t, response)
+
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+	if requestCount != 2 {
+		t.Fatalf("request count = %d, want 2", requestCount)
+	}
+}
+
+func TestSimpleParityToolsCallDaemonEndpoints(t *testing.T) {
+	tests := []struct {
+		name       string
+		tool       string
+		arguments  string
+		wantMethod string
+		wantPath   string
+		response   string
+	}{
+		{
+			name:       "list deliveries",
+			tool:       "cronplus.deliveries.list",
+			arguments:  `{}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/deliveries",
+			response:   `{"profiles":[]}`,
+		},
+		{
+			name:       "disable delivery commands",
+			tool:       "cronplus.deliveries.set_commands_enabled",
+			arguments:  `{"profile_id":"telegram","enabled":false}`,
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/deliveries/telegram/commands/disable",
+			response:   `{"ok":true}`,
+		},
+		{
+			name:       "remove delivery",
+			tool:       "cronplus.deliveries.remove",
+			arguments:  `{"profile_id":"telegram"}`,
+			wantMethod: http.MethodDelete,
+			wantPath:   "/api/deliveries/telegram",
+			response:   `{"ok":true}`,
+		},
+		{
+			name:       "list commands",
+			tool:       "cronplus.commands.list",
+			arguments:  `{}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/commands",
+			response:   `{"commands":[]}`,
+		},
+		{
+			name:       "clear commands",
+			tool:       "cronplus.commands.clear",
+			arguments:  `{}`,
+			wantMethod: http.MethodDelete,
+			wantPath:   "/api/commands",
+			response:   `{"ok":true}`,
+		},
+		{
+			name:       "pick directory",
+			tool:       "cronplus.system.pick_directory",
+			arguments:  `{}`,
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/system/pick-directory",
+			response:   `{"path":"/tmp/task"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+				if r.Method != tt.wantMethod {
+					t.Fatalf("method = %s, want %s", r.Method, tt.wantMethod)
+				}
+				if r.URL.Path != tt.wantPath {
+					t.Fatalf("path = %s, want %s", r.URL.Path, tt.wantPath)
+				}
+				return jsonHTTPResponse(http.StatusOK, tt.response), nil
+			})
+
+			server := NewServer(client, "test")
+			response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"`+tt.tool+`","arguments":`+tt.arguments+`}}`)
+			result := responseResult(t, response)
+			if result["isError"] != false {
+				t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+			}
+		})
+	}
+}
+
 func TestReadTaskRunResource(t *testing.T) {
 	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/tasks/task-1/runs/run-1" {
@@ -217,6 +398,19 @@ schedule:
 func quoteJSON(value string) string {
 	data, _ := json.Marshal(value)
 	return string(data)
+}
+
+func requestBodyMap(t *testing.T, r *http.Request) map[string]any {
+	t.Helper()
+	data, err := io.ReadAll(r.Body)
+	if err != nil {
+		t.Fatalf("read request body: %v", err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(data, &body); err != nil {
+		t.Fatalf("decode request body %q: %v", string(data), err)
+	}
+	return body
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)

@@ -187,6 +187,8 @@ go run . check /path/to/my-task
 
 Fix all validation errors before considering the task complete. Warnings should be resolved when practical, especially missing `script.name`.
 
+For MCP clients, use `cronplus.task_package.validate` before import. After import, use `cronplus.tasks.check` only for a diagnostic probe of the current package, and use `cronplus.runs.start` followed by `cronplus.runs.list`, `cronplus.runs.get`, or `cronplus.runs.wait` when you need real imported-task run history. MCP delivery tools manage daemon delivery profiles; profile list responses redact secrets, and `cronplus.deliveries.update` preserves omitted secrets and existing non-secret fields.
+
 ## Minimal Example
 
 `script.py`:

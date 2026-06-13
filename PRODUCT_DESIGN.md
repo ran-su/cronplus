@@ -97,7 +97,7 @@ cronplus (single Go binary)
 9. **Resource Cleanup**: Each run uses its own process group and per-run temp/profile/cache directory. CronPlus kills leftover process-group members, scans for detached processes referencing the run directory, and removes run artifacts.
 10. **Diagnostics**: Runs record Python executable, script path, working directory, timeout, process IDs, output bytes/discards, run directory, cleanup results, and structured-result detection.
 11. **Contract Checks**: CLI validation, schema output, and one-shot run checks help AI agents produce valid task packages before import. One-shot checks are diagnostic only; they do not write imported-task run history.
-12. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`.
+12. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`. MCP tools mirror the request/response REST API surface; the SSE-only event stream remains a web/API feature rather than an MCP tool.
 
 ## Distribution
 

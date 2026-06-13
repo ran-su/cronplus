@@ -230,11 +230,17 @@ MCP tools include:
 | `cronplus.task_package.validate` | Validate a task manifest without running code |
 | `cronplus.task_package.check` | Validate, prepare the environment, and run the script once as a diagnostic probe. Does not create imported-task run history or satisfy dependencies |
 | `cronplus.tasks.check` | Run the same diagnostic check for an imported task's current package. Does not create imported-task run history or satisfy dependencies |
-| `cronplus.tasks.import` / `reload` / `set_enabled` / `remove` | Manage imported tasks |
+| `cronplus.tasks.import` / `reload` / `set_enabled` / `remove` / `delivery_preview` | Manage imported tasks and preview latest-run delivery text |
 | `cronplus.runs.start` / `list` / `get` / `wait` | Start manual runs and inspect imported-task run history |
-| `cronplus.deliveries.test` | Send a test message through an existing delivery profile |
+| `cronplus.deliveries.list` / `create` / `update` / `set_commands_enabled` / `remove` / `test` | Manage delivery profiles and send delivery tests |
+| `cronplus.commands.list` / `clear` | Inspect and clear inbound command log records |
+| `cronplus.system.pick_directory` | Open the daemon host's native directory picker when supported |
 
-MCP resources include `cronplus://status`, `cronplus://tasks`, task/run resource templates, the manifest schema, and the task-authoring guide. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
+MCP resources include `cronplus://status`, `cronplus://tasks`, `cronplus://deliveries`, `cronplus://commands`, task/run resource templates, the manifest schema, and the task-authoring guide. The SSE-only `/api/events` stream has no request/response MCP tool equivalent. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
+
+Delivery profile tools follow the daemon API contract. `cronplus.deliveries.list` returns redacted profile metadata only; bot tokens and chat IDs are never returned through MCP. `cronplus.deliveries.create` accepts `name`, `bot_token`, `chat_id`, optional `id`, `enabled`, `inbound_commands_enabled`, and `authorized_chat_ids`. `cronplus.deliveries.update` uses `profile_id` plus any fields to change; omitted secrets and omitted non-secret fields keep their existing values.
+
+For imported tasks, use `cronplus.runs.start` to create real run history and `cronplus.runs.list` / `get` / `wait` to inspect it. `cronplus.tasks.check` and `cronplus.task_package.check` are diagnostic probes only; they execute code but do not create imported-task run history, trigger delivery, or satisfy dependencies.
 
 ## Features
 

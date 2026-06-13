@@ -299,6 +299,46 @@ func TestSimpleParityToolsCallDaemonEndpoints(t *testing.T) {
 			wantPath:   "/api/system/pick-directory",
 			response:   `{"path":"/tmp/task"}`,
 		},
+		{
+			name:       "health",
+			tool:       "cronplus.health",
+			arguments:  `{}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/health",
+			response:   `{"status":"healthy"}`,
+		},
+		{
+			name:       "dependency health",
+			tool:       "cronplus.tasks.dependency_health",
+			arguments:  `{"task_id":"task-1"}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/tasks/task-1/dependencies/health",
+			response:   `{"status":"healthy","dependencies":[]}`,
+		},
+		{
+			name:       "dependents",
+			tool:       "cronplus.tasks.dependents",
+			arguments:  `{"task_id":"task-1"}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/tasks/task-1/dependents",
+			response:   `{"dependents":[]}`,
+		},
+		{
+			name:       "environment",
+			tool:       "cronplus.tasks.environment",
+			arguments:  `{"task_id":"task-1"}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/tasks/task-1/environment",
+			response:   `{"strategy":"system","usage":{"bytes":0}}`,
+		},
+		{
+			name:       "environment rebuild",
+			tool:       "cronplus.tasks.environment_rebuild",
+			arguments:  `{"task_id":"task-1"}`,
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/tasks/task-1/environment/rebuild",
+			response:   `{"strategy":"managed_venv","setup":{"state":"pending"}}`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -323,6 +363,46 @@ func TestSimpleParityToolsCallDaemonEndpoints(t *testing.T) {
 	}
 }
 
+func TestSchedulePreviewToolPostsDaemonBody(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/schedules/preview" {
+			t.Fatalf("request = %s %s, want POST /api/schedules/preview", r.Method, r.URL.Path)
+		}
+		body := requestBodyMap(t, r)
+		if body["task_id"] != "task-1" || body["count"].(float64) != 3 {
+			t.Fatalf("body = %+v, want task_id and count", body)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"valid":true,"runs":[]}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":"cronplus.schedules.preview","arguments":{"task_id":"task-1","count":3}}}`)
+	result := responseResult(t, response)
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+}
+
+func TestRunsListToolPassesFilters(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet || r.URL.Path != "/api/tasks/task-1/runs" {
+			t.Fatalf("request = %s %s, want GET /api/tasks/task-1/runs", r.Method, r.URL.Path)
+		}
+		query := r.URL.Query()
+		if query.Get("status") != "success" || query.Get("trigger") != "manual" || query.Get("delivery_status") != "failed" || query.Get("q") != "ready" || query.Get("limit") != "5" {
+			t.Fatalf("query = %s, want run filters", r.URL.RawQuery)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"runs":[]}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"cronplus.runs.list","arguments":{"task_id":"task-1","status":"success","trigger":"manual","delivery_status":"failed","q":"ready","limit":5}}}`)
+	result := responseResult(t, response)
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+}
+
 func TestReadTaskRunResource(t *testing.T) {
 	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/tasks/task-1/runs/run-1" {
@@ -344,6 +424,57 @@ func TestReadTaskRunResource(t *testing.T) {
 	}
 	if !strings.Contains(content["text"].(string), `"run-1"`) {
 		t.Fatalf("content text = %q, want run id", content["text"])
+	}
+}
+
+func TestReadNewManagementResources(t *testing.T) {
+	tests := []struct {
+		name     string
+		uri      string
+		wantPath string
+		response string
+	}{
+		{
+			name:     "health",
+			uri:      "cronplus://health",
+			wantPath: "/api/health",
+			response: `{"status":"healthy"}`,
+		},
+		{
+			name:     "task environment",
+			uri:      "cronplus://tasks/task-1/environment",
+			wantPath: "/api/tasks/task-1/environment",
+			response: `{"strategy":"system"}`,
+		},
+		{
+			name:     "task dependency health",
+			uri:      "cronplus://tasks/task-1/dependencies/health",
+			wantPath: "/api/tasks/task-1/dependencies/health",
+			response: `{"status":"healthy"}`,
+		},
+		{
+			name:     "task dependents",
+			uri:      "cronplus://tasks/task-1/dependents",
+			wantPath: "/api/tasks/task-1/dependents",
+			response: `{"dependents":[]}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+				if r.URL.Path != tt.wantPath {
+					t.Fatalf("path = %s, want %s", r.URL.Path, tt.wantPath)
+				}
+				return jsonHTTPResponse(http.StatusOK, tt.response), nil
+			})
+			server := NewServer(client, "test")
+			response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":11,"method":"resources/read","params":{"uri":"`+tt.uri+`"}}`)
+			result := responseResult(t, response)
+			contents, ok := result["contents"].([]any)
+			if !ok || len(contents) != 1 {
+				t.Fatalf("contents = %#v, want one content item", result["contents"])
+			}
+		})
 	}
 }
 

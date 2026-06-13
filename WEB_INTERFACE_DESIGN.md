@@ -25,10 +25,11 @@ Three-step flow:
 | Login screen | n/a | Token input shown when auto-auth/localStorage token fails |
 | Dashboard | `/` | Task counts, next run, recent failures, task cards |
 | Tasks | `/tasks` | Task list with status, enable/disable, run buttons |
-| Task Detail | `/tasks/:id` | Manifest status, environment setup status, timeline, schedule, run history table, run/reload/remove-import/preview actions |
+| Task Detail | `/tasks/:id` | Manifest status, environment details and size, dependency health, timeline, schedule preview, filterable run history, run/reload/remove-import/preview actions |
 | Run Detail | `/tasks/:id/runs/:runId` | stdout, stderr, parsed result, run diagnostics, resource cleanup, delivery outcomes |
 | Delivery | `/delivery` | Profile list, create/test/delete |
 | Commands | `/commands` | Inbound command log |
+| Health | `/health` | Daemon health, active runs, storage usage, environment sizes, attention items |
 | Settings | `/settings` | Token display, version info |
 
 ## REST API
@@ -36,16 +37,24 @@ Three-step flow:
 | Method | Path | Description |
 |---|---|---|
 | `GET` | `/api/status` | Dashboard data |
+| `GET` | `/api/health` | Health and maintenance data |
+| `POST` | `/api/schedules/preview` | Preview upcoming runs for a task or cron expression |
 | `GET` | `/api/tasks` | List tasks |
 | `GET` | `/api/tasks/:id` | Task detail |
+| `POST` | `/api/tasks/check` | Check an arbitrary package path without importing it |
 | `POST` | `/api/tasks/import` | Import task `{"path":"..."}` |
 | `DELETE` | `/api/tasks/:id` | Remove import without deleting package files |
 | `POST` | `/api/tasks/:id/reload` | Re-read manifest from disk |
+| `POST` | `/api/tasks/:id/check` | Check an imported task package without creating run history |
 | `POST` | `/api/tasks/:id/run` | Trigger run |
 | `GET` | `/api/tasks/:id/delivery-preview` | Preview latest-run delivery message |
+| `GET` | `/api/tasks/:id/dependencies/health` | Dependency health for all declared dependencies |
+| `GET` | `/api/tasks/:id/dependents` | Tasks that depend on this task |
+| `GET` | `/api/tasks/:id/environment` | Environment strategy, paths, setup state, and size |
+| `POST` | `/api/tasks/:id/environment/rebuild` | Rebuild a managed venv |
 | `POST` | `/api/tasks/:id/enable` | Enable task |
 | `POST` | `/api/tasks/:id/disable` | Disable task |
-| `GET` | `/api/tasks/:id/runs` | Run history |
+| `GET` | `/api/tasks/:id/runs` | Run history with optional status, trigger, aggregate delivery status (`success`, `failed`, `skipped`, `none`), search, and limit filters |
 | `GET` | `/api/tasks/:id/runs/:runId` | Run detail |
 | `GET` | `/api/deliveries` | List profiles |
 | `POST` | `/api/deliveries` | Create profile |
@@ -73,4 +82,9 @@ The web UI also refreshes API state on a 30-second interval when no modal or inp
 - Dark theme with system UI and monospace fonts
 - Color-coded status (green/amber/red)
 - Live updates via SSE
+- Native system directory picker for task import when supported, with paste-path fallback
+- Run history filters for status, trigger, delivery state, and text search
+- Task environment card always shows strategy and reports managed/custom venv size when a venv path exists
+- Managed venv rebuild is available from task detail; custom venv paths are inspected but not deleted
+- Health page summarizes active runs, storage usage, environment sizes, and attention items
 - Responsive (works on mobile)

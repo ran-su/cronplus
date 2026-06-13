@@ -7,6 +7,7 @@ Local automation runner for Python task scripts. A single binary that schedules,
 - **Schedule** Python scripts using cron expressions
 - **Deliver** results to Telegram (more channels coming)
 - **Import and run** manifest-backed task packages from a web browser
+- **Inspect health** with run history filters, dependency health, environment sizes, and storage summaries
 - **Remote control** via Telegram commands (/status, /run, /list, etc.)
 
 ## Quick Start
@@ -145,6 +146,8 @@ Each dependency uses exactly one of `slug` or `id`. `require_status` defaults to
 
 Package checks do not satisfy dependencies. `cronplus check` and the web UI **Check** action validate a package, prepare its environment, and run its script as a diagnostic probe, but they do not create imported-task run history. Use **Run Now** on the imported dependency task to create the successful run record that downstream dependencies require.
 
+The web UI task detail page shows dependency health for every configured prerequisite and lists downstream dependents. The API and MCP tools expose the same information through dependency-health and dependents endpoints/tools.
+
 ### Task Lifecycle
 
 CronPlus does not create task packages and does not edit task files. AI agents or humans create package directories that follow the manifest contract; CronPlus imports those packages, validates them, schedules them, and records runs.
@@ -157,7 +160,7 @@ CronPlus does not create task packages and does not edit task files. AI agents o
 | **Run Now** | Execute the imported task immediately. Blocked while environment setup is `pending` or `failed` for `managed_venv` tasks. |
 | **Remove Import** | Unregister the task from CronPlus without deleting package files |
 
-Tasks with `runtime.environment.strategy: managed_venv` expose `environmentSetup.state` (`pending`, `ready`, `failed`, or `not_required`) in the API and web UI until the venv and requirements are prepared.
+Tasks expose environment details in the API and web UI, including strategy, resolved Python/requirements paths, setup state, and virtual-environment size. `managed_venv` tasks can be rebuilt from the web UI, API, or MCP; CronPlus removes the package-local `.cronplus-venv` and prepares it again. Custom `venv_path` environments report size but are not deleted or rebuilt by CronPlus because they may be shared.
 
 ## CLI
 
@@ -226,17 +229,21 @@ MCP tools include:
 | Tool | Purpose |
 |---|---|
 | `cronplus.status` | Read daemon status |
+| `cronplus.health` | Read health and maintenance summary, including active runs, storage usage, and environment sizes |
 | `cronplus.tasks.list` / `cronplus.tasks.get` | Inspect imported tasks |
 | `cronplus.task_package.validate` | Validate a task manifest without running code |
 | `cronplus.task_package.check` | Validate, prepare the environment, and run the script once as a diagnostic probe. Does not create imported-task run history or satisfy dependencies |
 | `cronplus.tasks.check` | Run the same diagnostic check for an imported task's current package. Does not create imported-task run history or satisfy dependencies |
 | `cronplus.tasks.import` / `reload` / `set_enabled` / `remove` / `delivery_preview` | Manage imported tasks and preview latest-run delivery text |
-| `cronplus.runs.start` / `list` / `get` / `wait` | Start manual runs and inspect imported-task run history |
+| `cronplus.tasks.dependency_health` / `dependents` | Inspect upstream dependency health and downstream dependent tasks |
+| `cronplus.tasks.environment` / `environment_rebuild` | Inspect environment paths/size and rebuild managed venvs |
+| `cronplus.schedules.preview` | Preview upcoming run times for a task or cron expression, including disabled tasks |
+| `cronplus.runs.start` / `list` / `get` / `wait` | Start manual runs and inspect imported-task run history. `list` supports status, trigger, aggregate delivery status (`success`, `failed`, `skipped`, `none`), search, and limit filters |
 | `cronplus.deliveries.list` / `create` / `update` / `set_commands_enabled` / `remove` / `test` | Manage delivery profiles and send delivery tests |
 | `cronplus.commands.list` / `clear` | Inspect and clear inbound command log records |
 | `cronplus.system.pick_directory` | Open the daemon host's native directory picker when supported |
 
-MCP resources include `cronplus://status`, `cronplus://tasks`, `cronplus://deliveries`, `cronplus://commands`, task/run resource templates, the manifest schema, and the task-authoring guide. The SSE-only `/api/events` stream has no request/response MCP tool equivalent. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
+MCP resources include `cronplus://status`, `cronplus://health`, `cronplus://tasks`, `cronplus://deliveries`, `cronplus://commands`, task/run/environment/dependency resource templates, the manifest schema, and the task-authoring guide. The SSE-only `/api/events` stream has no request/response MCP tool equivalent. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
 
 Delivery profile tools follow the daemon API contract. `cronplus.deliveries.list` returns redacted profile metadata only; bot tokens and chat IDs are never returned through MCP. `cronplus.deliveries.create` accepts `name`, `bot_token`, `chat_id`, optional `id`, `enabled`, `inbound_commands_enabled`, and `authorized_chat_ids`. `cronplus.deliveries.update` uses `profile_id` plus any fields to change; omitted secrets and omitted non-secret fields keep their existing values.
 
@@ -247,6 +254,9 @@ For imported tasks, use `cronplus.runs.start` to create real run history and `cr
 | Feature | Description |
 |---|---|
 | **Web UI** | Dark-themed dashboard with live updates via SSE |
+| **Run History** | Filterable task run history with diagnosis summaries and delivery state |
+| **Task Dependencies** | Manifest dependencies with pre-run gating, UI health checks, and dependent-task discovery |
+| **Health Page** | Active runs, daemon paths, storage usage, environment sizes, and attention items |
 | **Scheduler** | 5-field cron expressions with timezone support; 30-second evaluation tick (runs may start up to ~30s after the scheduled minute) |
 | **Python Envs** | System Python by default, managed venv per task, or custom venv |
 | **Delivery** | Telegram (more drivers planned) |
@@ -285,6 +295,22 @@ curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
 # Preview latest-run delivery message
 curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
   http://127.0.0.1:9876/api/tasks/{id}/delivery-preview
+
+# Inspect health and maintenance data
+curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  http://127.0.0.1:9876/api/health
+
+# Inspect task dependency and environment state
+curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  http://127.0.0.1:9876/api/tasks/{id}/dependencies/health
+curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  http://127.0.0.1:9876/api/tasks/{id}/environment
+
+# Preview a schedule, even for a disabled task
+curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"taskID":"{id}","count":5}' \
+  http://127.0.0.1:9876/api/schedules/preview
 
 # Send a delivery profile test message
 curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \

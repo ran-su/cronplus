@@ -68,6 +68,12 @@ A configured destination (e.g. Telegram bot). Defined via web UI or inline in ma
 ### Run
 One execution of a script. Records exit code, stdout, stderr, parsed result, and delivery outcomes.
 
+### Dependency
+A manifest-declared prerequisite task. CronPlus gates dependent runs before the script starts, and exposes dependency health so users can see target resolution, latest prerequisite run status, freshness, and skip/fail policy.
+
+### Environment
+The Python execution environment for a task. CronPlus supports system Python, package-local managed venvs, and custom venv paths. The UI and API expose resolved paths, setup state, and venv directory size; only managed venvs are rebuildable by CronPlus.
+
 ## Architecture
 
 ```
@@ -87,7 +93,7 @@ cronplus (single Go binary)
 ## Key Behaviors
 
 1. **Scheduling**: 30-second tick evaluates cron expressions, so minute-level schedules may start up to ~30s late. Skip-if-running policy prevents overlap, and a daemon-level concurrent-run cap limits aggregate load.
-2. **Environment**: System Python by default, with optional managed venv per task or custom venv path. Import and reload return after manifest validation; managed-venv creation and `pip install` run in the background and block runs until `environmentSetup.state` is `ready`.
+2. **Environment**: System Python by default, with optional managed venv per task or custom venv path. Import and reload return after manifest validation; managed-venv creation and `pip install` run in the background and block runs until `environmentSetup.state` is `ready`. Environment management reports venv size, resolved Python/requirements paths, and setup timestamps. Managed venv rebuild removes the package-local `.cronplus-venv` and prepares it again; custom `venv_path` directories are inspected but not deleted.
 3. **Delivery**: After a run, evaluate send_on conditions, render message template, send via driver.
 4. **Inbound Commands**: Telegram long-polling for /status, /list, /run, /help, etc.
 5. **Persistence**: JSON file with atomic writes. State restored on daemon restart.
@@ -97,7 +103,10 @@ cronplus (single Go binary)
 9. **Resource Cleanup**: Each run uses its own process group and per-run temp/profile/cache directory. CronPlus kills leftover process-group members, scans for detached processes referencing the run directory, and removes run artifacts.
 10. **Diagnostics**: Runs record Python executable, script path, working directory, timeout, process IDs, output bytes/discards, run directory, cleanup results, and structured-result detection.
 11. **Contract Checks**: CLI validation, schema output, and one-shot run checks help AI agents produce valid task packages before import. One-shot checks are diagnostic only; they do not write imported-task run history.
-12. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`. MCP tools mirror the request/response REST API surface; the SSE-only event stream remains a web/API feature rather than an MCP tool.
+12. **Task Dependencies**: Dependencies are checked against imported-task run history before a dependent task is marked running. Unhealthy dependencies create a normal completed run record with status `skipped` or `failure`, without launching the script or consuming an active-run slot. The API/UI/MCP can report all dependency checks and downstream dependents.
+13. **Schedule Preview**: Users can preview upcoming run times for a task or raw cron expression. Preview uses the manifest schedule helper and works for disabled tasks.
+14. **Health And Maintenance**: The health surface summarizes daemon metadata, task/run counts, active runs, recent failures, attention items, storage usage, and environment sizes.
+15. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`. MCP tools and resources mirror the request/response REST API surface where practical; the SSE-only event stream remains a web/API feature rather than an MCP tool.
 
 ## Distribution
 

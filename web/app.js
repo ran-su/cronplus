@@ -7,7 +7,25 @@ const OFFLINE_CACHE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 let authToken = localStorage.getItem('cronplus_token') || '';
 let sseConnection = null;
 let currentPage = 'dashboard';
-let appState = { status: null, tasks: [], taskDetails: {}, taskDetailLoading: {}, taskDetailErrors: {}, taskChecks: {}, runDetails: {}, runHistories: {}, deliveries: [], commands: [], connected: true };
+let appState = {
+    status: null,
+    health: null,
+    tasks: [],
+    taskDetails: {},
+    taskDetailLoading: {},
+    taskDetailErrors: {},
+    taskChecks: {},
+    taskEnvironments: {},
+    dependencyHealth: {},
+    taskDependents: {},
+    schedulePreviews: {},
+    runDetails: {},
+    runHistories: {},
+    runFilters: {},
+    deliveries: [],
+    commands: [],
+    connected: true
+};
 let appStateSignatures = { status: '', tasks: '', deliveries: '', commands: '' };
 let refreshInFlight = false;
 let refreshQueued = false;
@@ -172,11 +190,17 @@ async function performRefreshAll(options = {}) {
         const nextTasks = tasks.tasks || [];
         const sig = stateSignature(nextTasks);
         if (sig !== appStateSignatures.tasks) {
+            const changedTaskIDs = taskDerivedStateChangedIDs(appState.tasks, nextTasks);
             appState.tasks = nextTasks;
             const taskIDs = new Set(nextTasks.map(t => t.id));
             appState.taskDetails = Object.fromEntries(Object.entries(appState.taskDetails).filter(([id]) => taskIDs.has(id)));
             appState.runHistories = Object.fromEntries(Object.entries(appState.runHistories).filter(([id]) => taskIDs.has(id)));
             appState.runDetails = Object.fromEntries(Object.entries(appState.runDetails).filter(([, run]) => taskIDs.has(run?.taskID)));
+            appState.taskEnvironments = Object.fromEntries(Object.entries(appState.taskEnvironments).filter(([id]) => taskIDs.has(id)));
+            appState.dependencyHealth = Object.fromEntries(Object.entries(appState.dependencyHealth).filter(([id]) => taskIDs.has(id)));
+            appState.taskDependents = Object.fromEntries(Object.entries(appState.taskDependents).filter(([id]) => taskIDs.has(id)));
+            appState.schedulePreviews = Object.fromEntries(Object.entries(appState.schedulePreviews).filter(([id]) => taskIDs.has(id)));
+            invalidateChangedTaskDerivedState(changedTaskIDs);
             appState.taskDetailErrors = {};
             appState.taskChecks = {};
             appStateSignatures.tasks = sig;
@@ -214,6 +238,64 @@ async function performRefreshAll(options = {}) {
 
 function stateSignature(value) {
     return JSON.stringify(value || null);
+}
+
+function taskDerivedStateChangedIDs(previousTasks, nextTasks) {
+    const previousByID = new Map((previousTasks || []).map(task => [task.id, taskDerivedStateSignature(task)]));
+    const nextIDs = new Set();
+    const changed = new Set();
+    for (const task of nextTasks || []) {
+        nextIDs.add(task.id);
+        if (previousByID.get(task.id) !== taskDerivedStateSignature(task)) {
+            changed.add(task.id);
+        }
+    }
+    for (const task of previousTasks || []) {
+        if (!nextIDs.has(task.id)) changed.add(task.id);
+    }
+    return [...changed];
+}
+
+function taskDerivedStateSignature(task) {
+    return stateSignature({
+        id: task?.id,
+        name: task?.name,
+        slug: task?.slug,
+        enabled: task?.enabled,
+        packageDir: task?.packageDir,
+        running: task?.running,
+        scheduleSummary: task?.scheduleSummary,
+        description: task?.description,
+        manifestStatus: task?.manifestStatus,
+        environmentSetup: task?.environmentSetup,
+        timeline: taskTimelineDerivedState(task?.timeline),
+        lastRun: task?.lastRun,
+        lastDiagnosis: task?.lastDiagnosis
+    });
+}
+
+function taskTimelineDerivedState(timeline) {
+    if (!timeline) return null;
+    return {
+        totalRuns: timeline.totalRuns,
+        lastRunAt: timeline.lastRunAt,
+        lastSuccessAt: timeline.lastSuccessAt,
+        lastFailureAt: timeline.lastFailureAt,
+        averageDurationMs: timeline.averageDurationMs,
+        consecutiveFailures: timeline.consecutiveFailures
+    };
+}
+
+function invalidateChangedTaskDerivedState(taskIDs) {
+    if (!taskIDs.length) return;
+    for (const id of taskIDs) {
+        delete appState.taskDetails[id];
+        delete appState.taskEnvironments[id];
+        delete appState.schedulePreviews[id];
+    }
+    appState.dependencyHealth = {};
+    appState.taskDependents = {};
+    appState.health = null;
 }
 
 // ===== SSE =====
@@ -303,7 +385,7 @@ function goToHash(hash) {
 }
 
 function closeRouteModals() {
-    ['import-modal', 'edit-profile-modal', 'preview-modal'].forEach(id => {
+    ['import-modal', 'edit-profile-modal', 'preview-modal', 'schedule-preview-modal'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.remove();
     });
@@ -328,6 +410,16 @@ document.addEventListener('click', (e) => {
                 break;
             case 'retry-refresh':
                 refreshAll({ forceRender: true });
+                break;
+            case 'retry-health':
+                loadHealth({ force: true });
+                break;
+            case 'retry-task-environment':
+                loadTaskEnvironment(actionButton.dataset.taskId || '', { force: true });
+                break;
+            case 'retry-task-dependencies':
+                loadTaskDependencies(actionButton.dataset.taskId || '', { force: true });
+                loadTaskDependents(actionButton.dataset.taskId || '', { force: true });
                 break;
         }
         return;
@@ -369,6 +461,13 @@ function renderCurrentPage() {
         content.innerHTML = renderTaskDetail(path);
         loadTaskDetail(taskID);
         loadRunHistory(taskID);
+        loadTaskEnvironment(taskID);
+        loadTaskDependencies(taskID);
+        loadTaskDependents(taskID);
+    }
+    else if (path === '/health') {
+        content.innerHTML = renderHealth();
+        loadHealth();
     }
     else if (path === '/delivery') content.innerHTML = renderDelivery();
     else if (path === '/commands') content.innerHTML = renderCommands();
@@ -540,15 +639,16 @@ function renderTaskListContent() {
 function renderTaskCards(tasks) {
     return `<div class="task-list">${tasks.map(t => {
         const lr = t.lastRun;
-        let statusClass = t.enabled ? 'success' : 'disabled';
-        if (t.running) statusClass = 'running';
-        else if (lr && lr.status !== 'success') statusClass = 'failed';
+        const taskState = taskListState(t, lr);
 
         return `
         <div class="task-row${t.running ? ' is-running' : ''}" role="link" tabindex="0" onclick="window.location.hash='#/tasks/${t.id}'" onkeydown="if(event.key==='Enter')window.location.hash='#/tasks/${t.id}'">
-            <div class="task-status-dot ${statusClass}"></div>
+            <div class="task-status-dot ${taskState.className}" title="${attr(taskState.label)}" aria-label="${attr(taskState.label)}"></div>
             <div class="task-info">
-                <div class="task-name">${esc(t.name)}</div>
+                <div class="task-title-row">
+                    <div class="task-name">${esc(t.name)}</div>
+                    <span class="task-state-label task-state-${taskState.className}">${esc(taskState.label)}</span>
+                </div>
                 <div class="task-meta">
                     ${esc(t.scheduleSummary || 'No schedule')}
                     ${t.nextRun ? `· Next: ${formatTime(t.nextRun)}` : ''}
@@ -563,6 +663,13 @@ function renderTaskCards(tasks) {
             </div>
         </div>`;
     }).join('')}</div>`;
+}
+
+function taskListState(task, lastRun) {
+    if (task.running) return { className: 'running', label: 'Running' };
+    if (!task.enabled) return { className: 'disabled', label: 'Disabled' };
+    if (lastRun && lastRun.status !== 'success') return { className: 'failed', label: 'Needs attention' };
+    return { className: 'success', label: 'Enabled' };
 }
 
 // ===== Task Detail =====
@@ -608,18 +715,9 @@ function renderTaskDetail(path) {
             </div>
 
             <div class="task-sidebar">
-                <div class="detail-card">
-                    <h3>Schedule</h3>
-                    <div style="font-family:var(--font-mono);font-size:18px;color:var(--accent);margin-bottom:8px;font-weight:600;letter-spacing:1px">${esc(task.scheduleSummary || 'N/A')}</div>
-                    ${task.nextRun ? `<p style="color:var(--text-secondary);font-size:13px;display:flex;align-items:center;gap:6px;"><span class="task-status-dot running"></span> Next: ${formatTime(task.nextRun)}</p>` : ''}
-                    ${renderNextRuns(task.nextRuns || [])}
-                </div>
-
-                ${task.environmentSetup?.state === 'pending' || task.environmentSetup?.state === 'failed' ? `<div class="detail-card">
-                    <h3>Environment</h3>
-                    <div class="manifest-row"><span class="label">Status</span><span class="value">${esc(task.environmentSetup.state)}</span></div>
-                    ${task.environmentSetup.message ? `<div class="delivery-error">${esc(task.environmentSetup.message)}</div>` : ''}
-                </div>` : ''}
+                ${renderScheduleCard(task, id)}
+                ${renderTaskEnvironmentCard(task, appState.taskEnvironments[id])}
+                ${renderTaskDependenciesCard(task, appState.dependencyHealth[id], appState.taskDependents[id])}
 
                 <div class="detail-card">
                     <h3>Manifest</h3>
@@ -684,6 +782,168 @@ async function loadTaskDetail(taskID, options = {}) {
     }
 }
 
+async function loadTaskEnvironment(taskID, options = {}) {
+    if (!taskID) return;
+    if (!options.force && appState.taskEnvironments[taskID]) return;
+    const data = await api('GET', `/api/tasks/${taskID}/environment`);
+    if (!data || data.error) return;
+    appState.taskEnvironments[taskID] = data;
+    if (currentPage === `/tasks/${taskID}`) renderCurrentPage();
+}
+
+async function loadTaskDependencies(taskID, options = {}) {
+    if (!taskID) return;
+    if (!options.force && appState.dependencyHealth[taskID]) return;
+    const data = await api('GET', `/api/tasks/${taskID}/dependencies/health`);
+    if (!data || data.error) return;
+    appState.dependencyHealth[taskID] = data;
+    if (currentPage === `/tasks/${taskID}`) renderCurrentPage();
+}
+
+async function loadTaskDependents(taskID, options = {}) {
+    if (!taskID) return;
+    if (!options.force && appState.taskDependents[taskID]) return;
+    const data = await api('GET', `/api/tasks/${taskID}/dependents`);
+    if (!data || data.error) return;
+    appState.taskDependents[taskID] = data;
+    if (currentPage === `/tasks/${taskID}`) renderCurrentPage();
+}
+
+function renderScheduleCard(task, taskID) {
+    const preview = appState.schedulePreviews[taskID];
+    return `
+        <div class="detail-card">
+            <div class="card-title-row">
+                <h3>Schedule</h3>
+                <button class="btn btn-sm" onclick="previewSchedule('${taskID}')">Preview Schedule</button>
+            </div>
+            <div class="schedule-expression">${esc(task.scheduleSummary || 'N/A')}</div>
+            ${task.nextRun ? `<p class="schedule-next"><span class="task-status-dot running"></span> Next: ${formatTime(task.nextRun)}</p>` : ''}
+            ${renderNextRuns(task.nextRuns || [])}
+            ${preview ? `<div class="schedule-preview-mini">
+                <span>${preview.valid ? 'Preview' : 'Invalid'}</span>
+                <strong>${preview.valid ? `${(preview.runs || []).length} upcoming` : esc(preview.message || 'invalid')}</strong>
+            </div>` : ''}
+        </div>
+    `;
+}
+
+function renderTaskEnvironmentCard(task, env) {
+    const setup = env?.setup || task.environmentSetup || {};
+    const manifestEnv = task.manifest?.runtime?.environment || {};
+    const strategy = env?.strategy || manifestEnv.strategy || 'system';
+    const usage = env?.usage || {};
+    const setupBadge = setup.state ? `<span class="badge badge-${environmentBadgeClass(setup.state)}">${esc(setup.state)}</span>` : '<span class="badge badge-muted">unknown</span>';
+    return `
+        <div class="detail-card environment-card">
+            <div class="card-title-row">
+                <h3>Environment</h3>
+                ${setupBadge}
+            </div>
+            <div class="manifest-row"><span class="label">Strategy</span><span class="value">${esc(strategy)}</span></div>
+            ${env?.pythonExecutable ? `<div class="manifest-row"><span class="label">Python</span><span class="value">${esc(env.pythonExecutable)}</span></div>` : ''}
+            ${env?.requirementsFile ? `<div class="manifest-row"><span class="label">Requirements</span><span class="value">${esc(env.requirementsFile)}</span></div>` : ''}
+            ${env?.envFile ? `<div class="manifest-row"><span class="label">Env File</span><span class="value">${esc(env.envFile)}</span></div>` : ''}
+            ${env?.venvPath ? `<div class="manifest-row"><span class="label">Venv</span><span class="value">${esc(env.venvPath)}</span></div>` : ''}
+            <div class="manifest-row"><span class="label">Size</span><span class="value">${usage.path ? `${formatBytes(usage.bytes)}${usage.exists ? '' : ' missing'}` : 'N/A'}</span></div>
+            ${usage.files || usage.directories ? `<div class="manifest-row"><span class="label">Files</span><span class="value">${usage.files || 0} files · ${usage.directories || 0} dirs</span></div>` : ''}
+            ${hasRealTime(setup.startedAt) ? `<div class="manifest-row"><span class="label">Started</span><span class="value">${formatTime(setup.startedAt)}</span></div>` : ''}
+            ${hasRealTime(setup.finishedAt) ? `<div class="manifest-row"><span class="label">Finished</span><span class="value">${formatTime(setup.finishedAt)}</span></div>` : ''}
+            ${setup.message ? `<div class="delivery-error">${esc(setup.message)}</div>` : ''}
+            ${usage.error ? `<div class="delivery-error">${esc(usage.error)}</div>` : ''}
+            <div class="card-actions">
+                ${env ? `<button class="btn btn-sm" data-action="retry-task-environment" data-task-id="${attr(task.id)}">Refresh</button>` : `<button class="btn btn-sm" data-action="retry-task-environment" data-task-id="${attr(task.id)}">Load</button>`}
+                ${env?.canRebuild ? `<button class="btn btn-sm btn-danger" onclick="rebuildTaskEnvironment('${task.id}')">Rebuild</button>` : ''}
+            </div>
+        </div>
+    `;
+}
+
+function renderTaskDependenciesCard(task, health, dependentsReport) {
+    const dependencies = health?.dependencies || [];
+    const dependents = dependentsReport?.dependents || [];
+    const hasConfiguredDependencies = Array.isArray(task.manifest?.dependencies?.tasks) && task.manifest.dependencies.tasks.length > 0;
+    const status = health?.status || (hasConfiguredDependencies ? 'loading' : 'none');
+    return `
+        <div class="detail-card dependency-card">
+            <div class="card-title-row">
+                <h3>Dependencies</h3>
+                <span class="badge badge-${dependencyBadgeClass(status)}">${esc(status)}</span>
+            </div>
+            ${dependencies.length ? `<div class="dependency-list">
+                ${dependencies.map(dep => `
+                    <div class="dependency-row dependency-${esc(dep.status || 'unknown')}">
+                        <div>
+                            <strong>${esc(dep.targetName || dep.selector || `Dependency ${dep.index + 1}`)}</strong>
+                            <span>${esc(dep.requiredStatus || 'success')}${dep.maxAgeSeconds ? ` · max age ${formatDurationSeconds(dep.maxAgeSeconds)}` : ''}</span>
+                            ${dep.reason ? `<p>${esc(dep.reason)}</p>` : ''}
+                        </div>
+                        <span class="badge badge-${dependencyBadgeClass(dep.status)}">${esc(dep.status || 'unknown')}</span>
+                    </div>
+                `).join('')}
+            </div>` : `<p class="muted-copy">${hasConfiguredDependencies ? 'Loading dependency health...' : 'No upstream dependencies.'}</p>`}
+            <div class="manifest-row"><span class="label">Dependents</span><span class="value">${dependents.length}</span></div>
+            ${dependents.length ? `<div class="usage-list dependency-usage">
+                ${dependents.slice(0, 5).map(dep => `<a href="#/tasks/${esc(dep.taskID)}">${esc(dep.taskName)}</a>`).join('')}
+                ${dependents.length > 5 ? `<span>${dependents.length - 5} more</span>` : ''}
+            </div>` : ''}
+            <div class="card-actions">
+                <button class="btn btn-sm" data-action="retry-task-dependencies" data-task-id="${attr(task.id)}">Refresh</button>
+            </div>
+        </div>
+    `;
+}
+
+async function rebuildTaskEnvironment(taskID) {
+    if (!confirm('Rebuild this managed environment? CronPlus will remove the managed venv and install it again.')) return;
+    const result = await api('POST', `/api/tasks/${taskID}/environment/rebuild`);
+    if (result?.error) {
+        toast(result.message || 'Environment rebuild could not start', 'error');
+        return;
+    }
+    appState.taskEnvironments[taskID] = result;
+    delete appState.taskDetails[taskID];
+    toast('Environment rebuild started', 'success');
+    refreshAll();
+    loadTaskEnvironment(taskID, { force: true });
+}
+
+async function previewSchedule(taskID) {
+    const result = await api('POST', '/api/schedules/preview', { taskID, count: 10 });
+    if (result?.error) {
+        toast(result.message || 'Schedule preview failed', 'error');
+        return;
+    }
+    appState.schedulePreviews[taskID] = result;
+    showSchedulePreview(taskID, result);
+    if (currentPage === `/tasks/${taskID}`) renderCurrentPage();
+}
+
+function showSchedulePreview(taskID, preview) {
+    const existing = document.getElementById('schedule-preview-modal');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = 'schedule-preview-modal';
+    div.innerHTML = `
+        <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
+            <div class="modal modal-wide">
+                <h2>Schedule Preview</h2>
+                <div class="manifest-row"><span class="label">Expression</span><span class="value">${esc(preview.expression || '')}</span></div>
+                <div class="manifest-row"><span class="label">Timezone</span><span class="value">${esc(preview.timezone || 'UTC')}</span></div>
+                ${preview.valid ? `<div class="next-run-list schedule-preview-list">
+                    ${(preview.runs || []).map((time, index) => `
+                        <div class="next-run-row"><span>#${index + 1}</span><strong>${formatTime(time)}</strong></div>
+                    `).join('')}
+                </div>` : `<div class="delivery-error">${esc(preview.message || 'Schedule is invalid.')}</div>`}
+                <div class="modal-actions">
+                    <button class="btn btn-primary" onclick="document.getElementById('schedule-preview-modal').remove()">Close</button>
+                </div>
+            </div>
+        </div>
+    `;
+    document.body.appendChild(div);
+}
+
 async function loadRunHistory(taskID) {
     const data = await api('GET', `/api/tasks/${taskID}/runs`);
     const el = document.getElementById(`run-history-${taskID}`);
@@ -739,12 +999,26 @@ function renderRunHistoryUnavailable(taskID, message) {
 }
 
 function renderRunHistoryList(taskID, runs, options = {}) {
+    const filters = appState.runFilters[taskID] || {};
     return `
         ${options.notice ? renderInlineNotice(options.notice, options.tone || 'warning') : ''}
+        ${renderRunHistoryFilters(taskID, runs, filters)}
+        <div id="${attr(runHistoryResultsID(taskID))}">${renderRunHistoryResults(taskID, runs, filters)}</div>
+    `;
+}
+
+function renderRunHistoryResults(taskID, runs, filters = {}) {
+    const filteredRuns = filterRunHistoryRuns(runs, filters);
+    if (filteredRuns.length === 0) {
+        return renderInlineState('No matching runs', 'Adjust the filters to see more run history.', 'neutral');
+    }
+    return `
         <div class="run-history-list">
-            ${runs.map(r => {
+            ${filteredRuns.map(r => {
                 const status = runStatusFor(r);
                 const delivery = deliveryHistorySummary(r.deliveryResults || []);
+                const diagnosis = r.diagnosis || {};
+                const summary = diagnosis.summary || r.outcome?.parsedResult?.summary || '';
                 return `<a class="run-history-row" href="#/tasks/${r.taskID || taskID}/runs/${r.id}">
                     <div class="run-history-primary">
                         <span class="run-history-status-group">
@@ -752,16 +1026,93 @@ function renderRunHistoryList(taskID, runs, options = {}) {
                         </span>
                         ${renderDeliveryHistorySummary(delivery)}
                     </div>
+                    ${summary ? `<div class="run-history-summary">${esc(summary)}</div>` : ''}
                     <div class="run-history-meta">
                         <span><span class="run-history-label">Trigger</span>${esc(r.trigger)}</span>
                         <span><span class="run-history-label">Started</span>${formatTime(r.startedAt)}</span>
                         <span><span class="run-history-label">Duration</span>${r.outcome?.durationMs ? (r.outcome.durationMs / 1000).toFixed(1) + 's' : '—'}</span>
+                        <span><span class="run-history-label">Run ID</span>${esc(r.id)}</span>
                     </div>
                     <span class="run-history-view">View</span>
                 </a>`;
             }).join('')}
         </div>
     `;
+}
+
+function runHistoryResultsID(taskID) {
+    return `run-history-results-${taskID}`;
+}
+
+function renderRunHistoryFilters(taskID, runs, filters) {
+    const triggers = [...new Set((runs || []).map(r => r.trigger).filter(Boolean))].sort();
+    return `
+        <div class="run-history-filters">
+            <select class="filter-control" onchange="updateRunHistoryFilter('${taskID}', 'status', this.value)">
+                ${renderFilterOption('', 'All statuses', filters.status)}
+                ${['success', 'warning', 'failure', 'skipped'].map(status => renderFilterOption(status, status, filters.status)).join('')}
+            </select>
+            <select class="filter-control" onchange="updateRunHistoryFilter('${taskID}', 'trigger', this.value)">
+                ${renderFilterOption('', 'All triggers', filters.trigger)}
+                ${triggers.map(trigger => renderFilterOption(trigger, trigger, filters.trigger)).join('')}
+            </select>
+            <select class="filter-control" onchange="updateRunHistoryFilter('${taskID}', 'delivery', this.value)">
+                ${renderFilterOption('', 'All delivery', filters.delivery)}
+                ${['success', 'failed', 'skipped', 'none'].map(status => renderFilterOption(status, status, filters.delivery)).join('')}
+            </select>
+            <input class="filter-control filter-search" value="${attr(filters.q || '')}" placeholder="Search runs" oninput="updateRunHistoryFilter('${taskID}', 'q', this.value)">
+            <button class="btn btn-sm" onclick="resetRunHistoryFilters('${taskID}')">Reset</button>
+        </div>
+    `;
+}
+
+function renderFilterOption(value, label, selected) {
+    return `<option value="${attr(value)}" ${String(selected || '') === String(value) ? 'selected' : ''}>${esc(label)}</option>`;
+}
+
+function updateRunHistoryFilter(taskID, key, value) {
+    appState.runFilters[taskID] = { ...(appState.runFilters[taskID] || {}), [key]: value };
+    const resultsEl = document.getElementById(runHistoryResultsID(taskID));
+    if (resultsEl) {
+        resultsEl.innerHTML = renderRunHistoryResults(taskID, appState.runHistories[taskID] || [], appState.runFilters[taskID] || {});
+        return;
+    }
+    const listEl = document.getElementById(`run-history-${taskID}`);
+    if (listEl) {
+        listEl.innerHTML = renderRunHistoryList(taskID, appState.runHistories[taskID] || []);
+    }
+}
+
+function resetRunHistoryFilters(taskID) {
+    appState.runFilters[taskID] = {};
+    const el = document.getElementById(`run-history-${taskID}`);
+    if (el) {
+        el.innerHTML = renderRunHistoryList(taskID, appState.runHistories[taskID] || []);
+    }
+}
+
+function filterRunHistoryRuns(runs, filters) {
+    const status = normalizeRunStatus(filters.status || '');
+    const trigger = String(filters.trigger || '').toLowerCase();
+    const delivery = String(filters.delivery || '').toLowerCase();
+    const query = String(filters.q || '').trim().toLowerCase();
+    return (runs || []).filter(run => {
+        if (status && runStatusFor(run) !== status) return false;
+        if (trigger && String(run.trigger || '').toLowerCase() !== trigger) return false;
+        if (delivery && deliveryHistorySummary(run.deliveryResults || []).status !== delivery) return false;
+        if (query && !runHistorySearchText(run).includes(query)) return false;
+        return true;
+    });
+}
+
+function runHistorySearchText(run) {
+    const diagnosis = run.diagnosis || {};
+    const parsed = run.outcome?.parsedResult || {};
+    const deliveries = (run.deliveryResults || []).flatMap(result => [result.profileName, result.status, result.error]);
+    return [run.id, run.trigger, diagnosis.status, diagnosis.summary, parsed.status, parsed.summary, ...deliveries]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
 }
 
 // ===== Run Detail =====
@@ -898,6 +1249,120 @@ function renderRunDetailContent(run, options = {}) {
         ${run.outcome?.stderr ? `
         <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text-secondary)">STDERR</h3>
         <div class="log-block">${esc(run.outcome.stderr)}</div>` : ''}
+    `;
+}
+
+// ===== Health =====
+
+function renderHealth() {
+    return `
+        <div class="page-header" style="display:flex;justify-content:space-between;align-items:start">
+            <div>
+                <h1>Health</h1>
+                <p>Runtime, storage, and maintenance status</p>
+            </div>
+            <button class="btn" onclick="loadHealth({ force: true })">Refresh</button>
+        </div>
+        <div id="health-content">${renderHealthContent()}</div>
+    `;
+}
+
+async function loadHealth(options = {}) {
+    if (!options.force && appState.health) {
+        const el = document.getElementById('health-content');
+        if (el) el.innerHTML = renderHealthContent();
+        return;
+    }
+    const data = await api('GET', '/api/health');
+    const el = document.getElementById('health-content');
+    if (!data) {
+        if (el) el.innerHTML = renderInlineState('Health unavailable', 'CronPlus could not load health information.', 'error', 'Retry', 'data-action="retry-health"');
+        return;
+    }
+    if (data.error) {
+        if (el) el.innerHTML = renderInlineState('Health unavailable', data.message || 'CronPlus could not load health information.', 'error', 'Retry', 'data-action="retry-health"');
+        return;
+    }
+    appState.health = data;
+    if (el) el.innerHTML = renderHealthContent();
+}
+
+function renderHealthContent() {
+    const h = appState.health;
+    if (!h) return renderInlineState('Loading health', '', 'neutral');
+    const tasks = h.tasks || {};
+    const runs = h.runs || {};
+    const env = h.environments || {};
+    const storage = h.storage || {};
+    const server = h.server || {};
+    return `
+        <div class="attention-panel health-summary health-${esc(h.status || 'healthy')}">
+            <div>
+                <h2>${esc(h.status || 'healthy')}</h2>
+                <p>${esc(h.summary || '')}</p>
+            </div>
+            <span class="badge badge-${healthBadgeClass(h.status)}">${esc(h.version || appState.status?.version || 'dev')}</span>
+        </div>
+        <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">Tasks</div><div class="stat-value">${tasks.total || 0}</div><p>${tasks.enabled || 0} enabled · ${tasks.disabled || 0} disabled</p></div>
+            <div class="stat-card"><div class="stat-label">Runs</div><div class="stat-value ${(runs.recentFailures || 0) ? 'danger' : 'success'}">${runs.total || 0}</div><p>${runs.recentFailures || 0} failures in 24h</p></div>
+            <div class="stat-card"><div class="stat-label">Environments</div><div class="stat-value">${formatBytes(env.totalBytes || 0)}</div><p>${env.managed || 0} managed · ${env.customVenv || 0} custom</p></div>
+            <div class="stat-card"><div class="stat-label">Active Runs</div><div class="stat-value ${h.activeRuns?.length ? 'warning' : 'success'}">${(h.activeRuns || []).length}</div><p>${env.pending || 0} env pending · ${env.failed || 0} env failed</p></div>
+        </div>
+        <div class="health-grid">
+            <div class="detail-card">
+                <h3>Storage</h3>
+                ${renderUsageRow('State File', storage.stateFile)}
+                ${renderUsageRow('Config Dir', storage.configDir)}
+                ${renderUsageRow('Task Packages', storage.taskPackages)}
+                ${renderUsageRow('Environments', storage.environments)}
+            </div>
+            <div class="detail-card">
+                <h3>Daemon</h3>
+                <div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div>
+                <div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div>
+                <div class="manifest-row"><span class="label">State File</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
+                <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
+            </div>
+        </div>
+        ${renderActiveRuns(h.activeRuns || [])}
+        ${renderAttentionItems(h.attentionItems || [])}
+    `;
+}
+
+function renderUsageRow(label, usage) {
+    usage = usage || {};
+    return `
+        <div class="manifest-row">
+            <span class="label">${esc(label)}</span>
+            <span class="value">${usage.path ? `${formatBytes(usage.bytes || 0)} · ${usage.files || 0} files` : 'N/A'}</span>
+        </div>
+        ${usage.error ? `<div class="delivery-error">${esc(usage.error)}</div>` : ''}
+    `;
+}
+
+function renderActiveRuns(activeRuns) {
+    if (!activeRuns.length) return '';
+    return `
+        <div class="detail-card" style="margin-top:20px">
+            <h3>Active Runs</h3>
+            <div class="run-history-list">
+                ${activeRuns.map(run => `
+                    <div class="run-history-row">
+                        <div class="run-history-primary">
+                            <span class="badge badge-warning">running</span>
+                            <strong>${esc(run.taskID)}</strong>
+                        </div>
+                        <div class="run-history-meta">
+                            <span><span class="run-history-label">Run ID</span>${esc(run.runID)}</span>
+                            <span><span class="run-history-label">Started</span>${formatTime(run.startedAt)}</span>
+                            <span><span class="run-history-label">Root PID</span>${run.rootPID || '—'}</span>
+                            <span><span class="run-history-label">Run Dir</span>${esc(run.runDirectory || '—')}</span>
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
     `;
 }
 
@@ -1405,25 +1870,32 @@ async function removeTaskImport(id) {
 }
 
 function promptImportTask() {
-    // Show modal instead of prompt()
     const existing = document.getElementById('import-modal');
     if (existing) existing.remove();
     const div = document.createElement('div');
     div.id = 'import-modal';
     div.innerHTML = `
         <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
-            <div class="modal">
+            <div class="modal modal-wide">
                 <h2>Import Task Package</h2>
+                <div class="wizard-steps">
+                    <span class="current">Package</span>
+                    <span>Check</span>
+                    <span>Import</span>
+                </div>
                 <div class="form-group">
                     <label class="form-label">Package Directory</label>
                     <div class="path-picker-row">
                         <input class="form-input" id="import-path-input" placeholder="/path/to/my-task" style="font-family:var(--font-mono)" autofocus>
                         <button class="btn" id="import-pick-button" onclick="pickImportDirectory()">Browse</button>
                     </div>
-                    <p style="font-size:12px;color:var(--text-muted);margin-top:8px">Full path to a directory containing a .cronplus.yaml manifest</p>
                 </div>
+                <label class="checkbox-row">
+                    <input type="checkbox" id="import-enabled-input" checked />
+                    <span>Enable after import</span>
+                </label>
                 <div id="import-error" style="color:var(--danger);font-size:13px;display:none;margin-bottom:12px"></div>
-                <div id="import-check-result"></div>
+                <div id="import-check-result" class="import-check-slot"></div>
                 <div class="modal-actions">
                     <button class="btn" onclick="document.getElementById('import-modal').remove()">Cancel</button>
                     <button class="btn" onclick="checkImportPackage()">Check Package</button>
@@ -1433,10 +1905,12 @@ function promptImportTask() {
         </div>
     `;
     document.body.appendChild(div);
-    document.getElementById('import-path-input').focus();
-    document.getElementById('import-path-input').addEventListener('keydown', e => {
+    const pathInput = document.getElementById('import-path-input');
+    pathInput.focus();
+    pathInput.addEventListener('keydown', e => {
         if (e.key === 'Enter') doImportTask();
     });
+    pathInput.addEventListener('input', resetImportPackageCheck);
 }
 
 async function pickImportDirectory() {
@@ -1469,7 +1943,7 @@ async function pickImportDirectory() {
         if (result.path) {
             input.value = result.path;
             input.style.borderColor = '';
-            if (checkEl) checkEl.innerHTML = '';
+            resetImportPackageCheck();
             input.focus();
         }
     } finally {
@@ -1486,6 +1960,7 @@ async function checkImportPackage() {
         input.style.borderColor = 'var(--danger)';
         return;
     }
+    input.style.borderColor = '';
     resultEl.innerHTML = '<div class="check-panel"><h3>Package Check</h3><p>Checking package...</p></div>';
     const result = await api('POST', '/api/tasks/check', { path });
     if (result?.error) {
@@ -1493,6 +1968,31 @@ async function checkImportPackage() {
         return;
     }
     resultEl.innerHTML = renderTaskPackageCheck(result);
+    updateImportWizardSteps(result.status === 'success' || result.status === 'warning' ? 'ready' : 'check');
+}
+
+function resetImportPackageCheck() {
+    const checkEl = document.getElementById('import-check-result');
+    if (checkEl) checkEl.innerHTML = '';
+    updateImportWizardSteps('package');
+}
+
+function updateImportWizardSteps(state) {
+    const steps = document.querySelectorAll('#import-modal .wizard-steps span');
+    if (steps.length !== 3) return;
+    steps.forEach(step => step.className = '');
+    if (state === 'package') {
+        steps[0].classList.add('current');
+        return;
+    }
+    if (state === 'ready') {
+        steps[0].classList.add('done');
+        steps[1].classList.add('done');
+        steps[2].classList.add('current');
+        return;
+    }
+    steps[0].classList.add('done');
+    steps[1].classList.add('current');
 }
 
 async function doImportTask() {
@@ -1500,8 +2000,9 @@ async function doImportTask() {
     const errEl = document.getElementById('import-error');
     const path = input.value.trim();
     if (!path) { input.style.borderColor = 'var(--danger)'; return; }
+    const enabled = document.getElementById('import-enabled-input')?.checked !== false;
 
-    const result = await api('POST', '/api/tasks/import', { path });
+    const result = await api('POST', '/api/tasks/import', { path, enabled });
     if (result && result.id) {
         document.getElementById('import-modal').remove();
         toast(`Imported "${result.name}"`, 'success');
@@ -1580,6 +2081,11 @@ function clearOfflineCache() {
     appState.taskDetails = {};
     appState.runHistories = {};
     appState.runDetails = {};
+    appState.taskEnvironments = {};
+    appState.dependencyHealth = {};
+    appState.taskDependents = {};
+    appState.schedulePreviews = {};
+    appState.runFilters = {};
     toast('Offline cache cleared', 'info');
     if (currentPage.startsWith('/tasks')) renderCurrentPage();
 }
@@ -1654,6 +2160,33 @@ function renderEnvironmentSetupBadge(setup, standalone) {
     const badgeClass = setup.state === 'pending' ? 'badge-warning' : 'badge-danger';
     const badge = `<span class="badge ${badgeClass}">${label}</span>`;
     return standalone ? badge : `· ${badge}`;
+}
+
+function environmentBadgeClass(state) {
+    if (state === 'ready' || state === 'not_required') return 'success';
+    if (state === 'pending') return 'warning';
+    if (state === 'failed') return 'danger';
+    return 'muted';
+}
+
+function dependencyBadgeClass(status) {
+    if (status === 'healthy' || status === 'none') return 'success';
+    if (status === 'loading' || status === 'unknown') return 'muted';
+    return 'danger';
+}
+
+function healthBadgeClass(status) {
+    if (status === 'healthy') return 'success';
+    if (status === 'warning') return 'warning';
+    return 'danger';
+}
+
+function formatDurationSeconds(seconds) {
+    seconds = Number(seconds || 0);
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+    if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
+    return `${Math.round(seconds / 86400)}d`;
 }
 
 function esc(s) {
@@ -1897,6 +2430,7 @@ function formatTime(iso) {
     if (!iso) return '—';
     try {
         const d = new Date(iso);
+        if (!Number.isFinite(d.getTime()) || d.getFullYear() < 1971) return '—';
         const now = new Date();
         const diffMs = now - d;
 
@@ -1910,7 +2444,13 @@ function formatTime(iso) {
             month: 'short', day: 'numeric',
             hour: '2-digit', minute: '2-digit'
         });
-    } catch { return iso; }
+    } catch { return '—'; }
+}
+
+function hasRealTime(iso) {
+    if (!iso) return false;
+    const d = new Date(iso);
+    return Number.isFinite(d.getTime()) && d.getFullYear() >= 1971;
 }
 
 // ===== Toast Notifications =====

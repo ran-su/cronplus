@@ -35,6 +35,14 @@ func (s *Server) listTools() map[string]any {
 			Annotations:  readOnlyAnnotations(),
 		},
 		{
+			Name:         "cronplus.health",
+			Title:        "CronPlus Health",
+			Description:  "Read the local CronPlus health and maintenance summary, including active runs, storage usage, environment sizes, and attention items.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
 			Name:         "cronplus.tasks.list",
 			Title:        "List Tasks",
 			Description:  "List imported CronPlus tasks with schedule, manifest, running, timeline, and latest-run summary fields.",
@@ -49,6 +57,60 @@ func (s *Server) listTools() map[string]any {
 			InputSchema: objectSchema(map[string]any{
 				"task_id": stringProperty("Imported CronPlus task ID."),
 			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.tasks.dependency_health",
+			Title:       "Task Dependency Health",
+			Description: "Read all declared dependency checks for an imported task, including target resolution, latest dependency run status, age, and unhealthy reason.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.tasks.dependents",
+			Title:       "Task Dependents",
+			Description: "List imported tasks that declare a dependency on this task by ID or slug.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.tasks.environment",
+			Title:       "Task Environment",
+			Description: "Read an imported task's Python environment details, setup state, resolved paths, and environment directory size.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.tasks.environment_rebuild",
+			Title:       "Rebuild Task Environment",
+			Description: "Rebuild an imported task's managed Python virtual environment. Only managed_venv environments are rebuildable; custom venv_path environments are reported but not deleted.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": false, "openWorldHint": false},
+		},
+		{
+			Name:        "cronplus.schedules.preview",
+			Title:       "Preview Schedule",
+			Description: "Preview upcoming run times for a task or cron expression. Task previews work even when the task is disabled.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id":    stringProperty("Optional imported CronPlus task ID. If provided, expression and timezone default to the task schedule."),
+				"expression": stringProperty("Optional cron expression to preview."),
+				"timezone":   stringProperty("Optional IANA timezone. Defaults to the task timezone or UTC."),
+				"after":      stringProperty("Optional RFC3339 timestamp to preview after. Defaults to now."),
+				"count":      map[string]any{"type": "integer", "minimum": 1, "maximum": 50, "description": "Number of upcoming runs to return. Defaults to 10."},
+			}),
 			OutputSchema: objectOutputSchema(),
 			Annotations:  readOnlyAnnotations(),
 		},
@@ -147,9 +209,14 @@ func (s *Server) listTools() map[string]any {
 		{
 			Name:        "cronplus.runs.list",
 			Title:       "List Runs",
-			Description: "Read run history for an imported task, newest first. Diagnostic package checks are not included because they do not create imported-task run history.",
+			Description: "Read run history for an imported task, newest first, with optional status, trigger, delivery status, search, and limit filters. Diagnostic package checks are not included because they do not create imported-task run history.",
 			InputSchema: objectSchema(map[string]any{
-				"task_id": stringProperty("Imported CronPlus task ID."),
+				"task_id":         stringProperty("Imported CronPlus task ID."),
+				"status":          stringProperty("Optional run status filter: success, failure, warning, or skipped."),
+				"trigger":         stringProperty("Optional trigger filter: schedule, manual, or command."),
+				"delivery_status": stringProperty("Optional aggregate delivery status filter: success, failed, skipped, or none."),
+				"q":               stringProperty("Optional case-insensitive search over run ID, trigger, diagnosis, structured summary, and delivery results."),
+				"limit":           map[string]any{"type": "integer", "minimum": 1, "description": "Optional maximum number of runs to return."},
 			}, "task_id"),
 			OutputSchema: objectOutputSchema(),
 			Annotations:  readOnlyAnnotations(),
@@ -282,6 +349,10 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Get("/api/status")
 		}), nil
+	case "cronplus.health":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/health")
+		}), nil
 	case "cronplus.tasks.list":
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Get("/api/tasks")
@@ -298,6 +369,69 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 		}
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Get("/api/tasks/" + pathID(args.TaskID))
+		}), nil
+	case "cronplus.tasks.dependency_health":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/tasks/" + pathID(args.TaskID) + "/dependencies/health")
+		}), nil
+	case "cronplus.tasks.dependents":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/tasks/" + pathID(args.TaskID) + "/dependents")
+		}), nil
+	case "cronplus.tasks.environment":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/tasks/" + pathID(args.TaskID) + "/environment")
+		}), nil
+	case "cronplus.tasks.environment_rebuild":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/tasks/"+pathID(args.TaskID)+"/environment/rebuild", nil)
+		}), nil
+	case "cronplus.schedules.preview":
+		var args schedulePreviewArgs
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" && strings.TrimSpace(args.Expression) == "" {
+			return nil, invalidParams("task_id or expression is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/schedules/preview", schedulePreviewBody(args))
 		}), nil
 	case "cronplus.task_package.validate":
 		var args struct {
@@ -428,9 +562,7 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 			return c.Post("/api/tasks/"+pathID(args.TaskID)+"/run", nil)
 		}), nil
 	case "cronplus.runs.list":
-		var args struct {
-			TaskID string `json:"task_id"`
-		}
+		var args runListArgs
 		if err := bindArgs(call.Arguments, &args); err != nil {
 			return nil, err
 		}
@@ -438,7 +570,7 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 			return nil, invalidParams("task_id is required")
 		}
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
-			return c.Get("/api/tasks/" + pathID(args.TaskID) + "/runs")
+			return c.Get(runListPath(args))
 		}), nil
 	case "cronplus.runs.get":
 		var args runLookupArgs
@@ -577,6 +709,23 @@ type runLookupArgs struct {
 	RunID  string `json:"run_id"`
 }
 
+type runListArgs struct {
+	TaskID         string `json:"task_id"`
+	Status         string `json:"status"`
+	Trigger        string `json:"trigger"`
+	DeliveryStatus string `json:"delivery_status"`
+	Query          string `json:"q"`
+	Limit          int    `json:"limit"`
+}
+
+type schedulePreviewArgs struct {
+	TaskID     string `json:"task_id"`
+	Expression string `json:"expression"`
+	Timezone   string `json:"timezone"`
+	After      string `json:"after"`
+	Count      int    `json:"count"`
+}
+
 type deliveryProfileArgs struct {
 	ProfileID              string   `json:"profile_id"`
 	ID                     string   `json:"id"`
@@ -597,6 +746,50 @@ func (a runLookupArgs) validate() *rpcError {
 		return invalidParams("run_id is required")
 	}
 	return nil
+}
+
+func runListPath(args runListArgs) string {
+	path := "/api/tasks/" + pathID(args.TaskID) + "/runs"
+	values := url.Values{}
+	if strings.TrimSpace(args.Status) != "" {
+		values.Set("status", strings.TrimSpace(args.Status))
+	}
+	if strings.TrimSpace(args.Trigger) != "" {
+		values.Set("trigger", strings.TrimSpace(args.Trigger))
+	}
+	if strings.TrimSpace(args.DeliveryStatus) != "" {
+		values.Set("delivery_status", strings.TrimSpace(args.DeliveryStatus))
+	}
+	if strings.TrimSpace(args.Query) != "" {
+		values.Set("q", strings.TrimSpace(args.Query))
+	}
+	if args.Limit > 0 {
+		values.Set("limit", fmt.Sprintf("%d", args.Limit))
+	}
+	if encoded := values.Encode(); encoded != "" {
+		path += "?" + encoded
+	}
+	return path
+}
+
+func schedulePreviewBody(args schedulePreviewArgs) map[string]any {
+	body := map[string]any{}
+	if strings.TrimSpace(args.TaskID) != "" {
+		body["task_id"] = strings.TrimSpace(args.TaskID)
+	}
+	if strings.TrimSpace(args.Expression) != "" {
+		body["expression"] = strings.TrimSpace(args.Expression)
+	}
+	if strings.TrimSpace(args.Timezone) != "" {
+		body["timezone"] = strings.TrimSpace(args.Timezone)
+	}
+	if strings.TrimSpace(args.After) != "" {
+		body["after"] = strings.TrimSpace(args.After)
+	}
+	if args.Count > 0 {
+		body["count"] = args.Count
+	}
+	return body
 }
 
 func createDeliveryProfileBody(args deliveryProfileArgs) map[string]any {

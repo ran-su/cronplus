@@ -73,7 +73,7 @@ Field guidance:
 - `missed_run_policy` must be `skip`; CronPlus does not backfill missed runs.
 - `delivery.send_on` supports `success`, `failure`, `warning`, and `skipped`; `failed` is accepted as an alias for `failure`.
 - `dependencies.tasks` is optional. Each dependency must use exactly one of `slug` or `id`; `require_status` defaults to `success`; `max_age_seconds` is optional; `on_unhealthy` defaults to `skip` and can be `fail`.
-- Dependencies are checked against imported-task run history. `cronplus check` is a diagnostic probe and does not create run history or satisfy dependencies; use **Run Now** on the imported dependency task for that.
+- Dependencies are checked against imported-task run history. `cronplus check` is a diagnostic probe and does not create run history or satisfy dependencies; use **Run Now** on the imported dependency task for that. After import, the web UI and MCP `cronplus.tasks.dependency_health` tool can inspect target resolution, latest upstream status, and freshness.
 
 ## Python Script Contract
 
@@ -177,6 +177,8 @@ cronplus check /path/to/my-task
 ```
 
 `cronplus check` prepares the environment and executes the package once, but it is not a scheduled/imported task run. It does not create run history, trigger delivery, or satisfy manifest dependencies.
+
+For imported tasks, use the web UI schedule preview or MCP `cronplus.schedules.preview` to confirm upcoming run times, especially for disabled tasks where the normal next-run field is intentionally empty. Use the task environment view or MCP `cronplus.tasks.environment` to inspect managed/custom venv paths and environment size.
 
 If running from the CronPlus source tree without an installed binary, use:
 

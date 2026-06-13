@@ -607,6 +607,108 @@ func TestRunTaskFailsWhenDependencyUnhealthyPolicyIsFail(t *testing.T) {
 	}
 }
 
+func TestDependencyHealthReportsAllDependencies(t *testing.T) {
+	managerDir := writeNamedTaskPackage(t, "Browser Manager", "print('manager')\n", "", "")
+	freshDir := writeNamedTaskPackage(t, "Fresh Manager", "print('fresh')\n", "", "")
+	dependentDir := writeNamedTaskPackage(t, "Dependent Task", "print('dependent')\n", "", `dependencies:
+  tasks:
+    - slug: browser-manager
+      max_age_seconds: 60
+    - slug: fresh-manager
+      max_age_seconds: 3600
+`)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	stale, err := engine.ImportTask(managerDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask stale manager: %v", err)
+	}
+	fresh, err := engine.ImportTask(freshDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask fresh manager: %v", err)
+	}
+	dependent, err := engine.ImportTask(dependentDir, true)
+	if err != nil {
+		t.Fatalf("ImportTask dependent: %v", err)
+	}
+	engine.runHistory[stale.ID] = []models.RunRecord{{
+		ID:         "stale-run",
+		TaskID:     stale.ID,
+		FinishedAt: time.Now().Add(-2 * time.Hour),
+		Outcome:    models.RunOutcome{ExitCode: 0},
+	}}
+	engine.runHistory[fresh.ID] = []models.RunRecord{{
+		ID:         "fresh-run",
+		TaskID:     fresh.ID,
+		FinishedAt: time.Now(),
+		Outcome:    models.RunOutcome{ExitCode: 0},
+	}}
+
+	report, err := engine.DependencyHealth(dependent.ID)
+	if err != nil {
+		t.Fatalf("DependencyHealth: %v", err)
+	}
+	if report.Status != "unhealthy" || len(report.Dependencies) != 2 {
+		t.Fatalf("report = %+v, want two dependencies and unhealthy status", report)
+	}
+	if report.Dependencies[0].Status != "unhealthy" || !strings.Contains(report.Dependencies[0].Reason, "stale") {
+		t.Fatalf("dependency 0 = %+v, want stale unhealthy", report.Dependencies[0])
+	}
+	if report.Dependencies[1].Status != "healthy" || report.Dependencies[1].LastRunID != "fresh-run" {
+		t.Fatalf("dependency 1 = %+v, want healthy fresh run", report.Dependencies[1])
+	}
+}
+
+func TestRebuildTaskEnvironmentRemovesManagedVenvAndRunsSetup(t *testing.T) {
+	dir := writeManagedVenvTaskPackage(t)
+	venvDir := filepath.Join(dir, ".cronplus-venv")
+	if err := os.MkdirAll(filepath.Join(venvDir, "bin"), 0700); err != nil {
+		t.Fatalf("mkdir venv: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(venvDir, "old.txt"), []byte("old"), 0600); err != nil {
+		t.Fatalf("write old env file: %v", err)
+	}
+
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	setupCalls := 0
+	engine.environmentSetupFunc = func(*models.ScriptManifest, string) error {
+		setupCalls++
+		if setupCalls == 1 {
+			return nil
+		}
+		if _, err := os.Stat(filepath.Join(venvDir, "old.txt")); !os.IsNotExist(err) {
+			t.Fatalf("old env file stat = %v, want removed before setup", err)
+		}
+		if err := os.MkdirAll(venvDir, 0700); err != nil {
+			return err
+		}
+		return os.WriteFile(filepath.Join(venvDir, "rebuilt.txt"), []byte("ready"), 0600)
+	}
+
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+	waitForEnvironmentState(t, engine, task.ID, "ready", 2*time.Second)
+	if setupCalls != 1 {
+		t.Fatalf("setupCalls after import = %d, want 1", setupCalls)
+	}
+
+	detail, err := engine.RebuildTaskEnvironment(task.ID)
+	if err != nil {
+		t.Fatalf("RebuildTaskEnvironment: %v", err)
+	}
+	if !detail.CanRebuild || detail.Setup.State != "pending" {
+		t.Fatalf("detail = %+v, want rebuildable pending environment", detail)
+	}
+	waitForEnvironmentState(t, engine, task.ID, "ready", 2*time.Second)
+	if setupCalls != 2 {
+		t.Fatalf("setupCalls after rebuild = %d, want 2", setupCalls)
+	}
+	if _, err := os.Stat(filepath.Join(venvDir, "rebuilt.txt")); err != nil {
+		t.Fatalf("rebuilt env marker missing: %v", err)
+	}
+}
+
 func TestRemoveTaskTerminatesActiveRunAndSkipsHistory(t *testing.T) {
 	python, err := exec.LookPath("python3")
 	if err != nil {

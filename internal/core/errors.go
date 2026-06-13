@@ -13,6 +13,7 @@ var (
 	ErrDeliveryProfileNotFound   = errors.New("delivery profile not found")
 	ErrEnvironmentSetupPending   = errors.New("environment setup in progress")
 	ErrEnvironmentSetupFailed    = errors.New("environment setup failed")
+	ErrEnvironmentNotRebuildable = errors.New("environment is not rebuildable")
 )
 
 // ManifestValidationError is returned when a task manifest fails validation.

@@ -27,6 +27,8 @@ func writeEngineError(w http.ResponseWriter, err error, fallbackStatus int, fall
 		writeError(w, http.StatusConflict, "environment_setup_pending", err.Error())
 	case errors.Is(err, core.ErrEnvironmentSetupFailed):
 		writeError(w, http.StatusBadRequest, "environment_setup_failed", err.Error())
+	case errors.Is(err, core.ErrEnvironmentNotRebuildable):
+		writeError(w, http.StatusBadRequest, "environment_not_rebuildable", err.Error())
 	case errors.Is(err, core.ErrDeliveryProfileNotFound):
 		writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
 	default:

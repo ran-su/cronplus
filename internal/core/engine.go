@@ -579,80 +579,8 @@ func (e *Engine) evaluateTaskDependenciesLocked(task *models.Task, now time.Time
 }
 
 func (e *Engine) evaluateTaskDependencyLocked(index int, dependency models.TaskDependency, now time.Time) *dependencyGateResult {
-	requiredStatus := models.NormalizeRunStatus(dependency.RequireStatus)
-	if requiredStatus == "" {
-		requiredStatus = "success"
-	}
-	onUnhealthy := strings.ToLower(strings.TrimSpace(dependency.OnUnhealthy))
-	if onUnhealthy == "" {
-		onUnhealthy = "skip"
-	}
-
-	target, ambiguous := e.findDependencyTargetLocked(dependency)
-	selector := dependencySelector(dependency)
-	baseData := map[string]any{
-		"dependencyIndex": index,
-		"selector":        selector,
-		"requiredStatus":  requiredStatus,
-		"maxAgeSeconds":   dependency.MaxAgeSeconds,
-		"onUnhealthy":     onUnhealthy,
-	}
-	if strings.TrimSpace(dependency.ID) != "" {
-		baseData["dependencyID"] = strings.TrimSpace(dependency.ID)
-	}
-	if strings.TrimSpace(dependency.Slug) != "" {
-		baseData["dependencySlug"] = strings.TrimSpace(dependency.Slug)
-	}
-
-	if ambiguous {
-		return unhealthyDependencyResult(onUnhealthy, fmt.Sprintf("Dependency %s matches multiple tasks.", selector), baseData)
-	}
-	if target == nil {
-		return unhealthyDependencyResult(onUnhealthy, fmt.Sprintf("Dependency %s was not found.", selector), baseData)
-	}
-
-	baseData["targetID"] = target.ID
-	baseData["targetName"] = target.DisplayName
-	history := e.runHistory[target.ID]
-	if len(history) == 0 {
-		return unhealthyDependencyResult(onUnhealthy, fmt.Sprintf("Dependency %s has no completed runs.", selector), baseData)
-	}
-
-	last := history[0]
-	lastStatus := models.RunStatusFromOutcome(last.Outcome)
-	baseData["lastStatus"] = lastStatus
-	if !last.FinishedAt.IsZero() {
-		baseData["lastFinishedAt"] = last.FinishedAt
-	}
-	if lastStatus != requiredStatus {
-		return unhealthyDependencyResult(
-			onUnhealthy,
-			fmt.Sprintf("Dependency %s latest status is %s; required %s.", selector, lastStatus, requiredStatus),
-			baseData,
-		)
-	}
-
-	if dependency.MaxAgeSeconds > 0 {
-		maxAge := time.Duration(dependency.MaxAgeSeconds) * time.Second
-		if last.FinishedAt.IsZero() {
-			return unhealthyDependencyResult(
-				onUnhealthy,
-				fmt.Sprintf("Dependency %s latest run has no finish time; required age <= %s.", selector, maxAge),
-				baseData,
-			)
-		}
-		age := now.Sub(last.FinishedAt)
-		if age > maxAge {
-			baseData["lastAgeSeconds"] = int64(age.Seconds())
-			return unhealthyDependencyResult(
-				onUnhealthy,
-				fmt.Sprintf("Dependency %s latest %s is stale; age %s exceeds max %s.", selector, requiredStatus, age.Round(time.Second), maxAge),
-				baseData,
-			)
-		}
-	}
-
-	return nil
+	item := e.evaluateTaskDependencyHealthLocked(index, dependency, now)
+	return dependencyHealthGateResult(item)
 }
 
 func (e *Engine) findDependencyTargetLocked(dependency models.TaskDependency) (*models.Task, bool) {

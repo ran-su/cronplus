@@ -27,6 +27,8 @@ func RoutesWithInfo(mux *http.ServeMux, engine *core.Engine, info ServerInfo) {
 		info.MaxConcurrentRuns = engine.MaxConcurrentRuns()
 	}
 	mux.HandleFunc("GET /api/status", handleGetStatus(engine, info))
+	mux.HandleFunc("GET /api/health", handleGetHealth(engine, info))
+	mux.HandleFunc("POST /api/schedules/preview", handleSchedulePreview(engine))
 	mux.HandleFunc("POST /api/system/pick-directory", handlePickDirectory(pickDirectory))
 	mux.HandleFunc("GET /api/tasks", handleGetTasks(engine))
 	mux.HandleFunc("POST /api/tasks/check", handleCheckTaskPackage(engine))
@@ -37,6 +39,10 @@ func RoutesWithInfo(mux *http.ServeMux, engine *core.Engine, info ServerInfo) {
 	mux.HandleFunc("POST /api/tasks/{id}/check", handleCheckImportedTask(engine))
 	mux.HandleFunc("POST /api/tasks/{id}/run", handleRunTask(engine))
 	mux.HandleFunc("GET /api/tasks/{id}/delivery-preview", handleDeliveryPreview(engine))
+	mux.HandleFunc("GET /api/tasks/{id}/dependencies/health", handleDependencyHealth(engine))
+	mux.HandleFunc("GET /api/tasks/{id}/dependents", handleTaskDependents(engine))
+	mux.HandleFunc("GET /api/tasks/{id}/environment", handleTaskEnvironment(engine))
+	mux.HandleFunc("POST /api/tasks/{id}/environment/rebuild", handleRebuildTaskEnvironment(engine))
 	mux.HandleFunc("POST /api/tasks/{id}/enable", handleSetTaskEnabled(engine, true))
 	mux.HandleFunc("POST /api/tasks/{id}/disable", handleSetTaskEnabled(engine, false))
 	mux.HandleFunc("GET /api/tasks/{id}/runs", handleGetTaskRuns(engine))
@@ -331,7 +337,8 @@ func handleSetTaskEnabled(engine *core.Engine, enabled bool) http.HandlerFunc {
 func handleGetTaskRuns(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		taskID := r.PathValue("id")
-		if engine.Task(taskID) == nil {
+		task := engine.Task(taskID)
+		if task == nil {
 			writeError(w, http.StatusNotFound, "task_not_found", "No task with ID "+taskID)
 			return
 		}
@@ -339,7 +346,7 @@ func handleGetTaskRuns(engine *core.Engine) http.HandlerFunc {
 		if runs == nil {
 			runs = []models.RunRecord{}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"runs": runs})
+		writeJSON(w, http.StatusOK, map[string]any{"runs": filterAndAnnotateRuns(task, runs, r)})
 	}
 }
 

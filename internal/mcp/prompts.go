@@ -131,9 +131,9 @@ When structured results are expected, make the script print CRONPLUS_RESULT=<jso
 func debugRunPrompt(args map[string]string) string {
 	taskID := strings.TrimSpace(args["task_id"])
 	runID := strings.TrimSpace(args["run_id"])
-	runInstruction := "Read cronplus://tasks/" + taskID + "/runs and inspect the latest run."
+	runInstruction := "Call cronplus.runs.list for task " + taskID + " and inspect the latest run."
 	if runID != "" {
-		runInstruction = "Read cronplus://tasks/" + taskID + "/runs/" + runID + "."
+		runInstruction = "Call cronplus.runs.get for task " + taskID + " run " + runID + "."
 	}
 	return fmt.Sprintf(`Debug a CronPlus task run.
 

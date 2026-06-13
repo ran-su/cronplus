@@ -229,8 +229,9 @@ MCP tools include:
 | `cronplus.tasks.list` / `cronplus.tasks.get` | Inspect imported tasks |
 | `cronplus.task_package.validate` | Validate a task manifest without running code |
 | `cronplus.task_package.check` | Validate, prepare the environment, and run the script once as a diagnostic probe. Does not create imported-task run history or satisfy dependencies |
+| `cronplus.tasks.check` | Run the same diagnostic check for an imported task's current package. Does not create imported-task run history or satisfy dependencies |
 | `cronplus.tasks.import` / `reload` / `set_enabled` / `remove` | Manage imported tasks |
-| `cronplus.runs.start` / `get` / `wait` | Start and inspect manual runs |
+| `cronplus.runs.start` / `list` / `get` / `wait` | Start manual runs and inspect imported-task run history |
 | `cronplus.deliveries.test` | Send a test message through an existing delivery profile |
 
 MCP resources include `cronplus://status`, `cronplus://tasks`, task/run resource templates, the manifest schema, and the task-authoring guide. There is no HTTP MCP endpoint yet; MCP support is stdio-only.

@@ -73,6 +73,16 @@ func (s *Server) listTools() map[string]any {
 			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
 		},
 		{
+			Name:        "cronplus.tasks.check",
+			Title:       "Check Imported Task",
+			Description: "Validate an imported task's current package, prepare its environment, and run the script once as a diagnostic probe. This does not create imported-task run history, trigger delivery, or satisfy dependencies.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+		},
+		{
 			Name:        "cronplus.tasks.import",
 			Title:       "Import Task",
 			Description: "Import a validated CronPlus task package into the local daemon. This registers the task but does not delete or edit package files.",
@@ -123,6 +133,16 @@ func (s *Server) listTools() map[string]any {
 			}, "task_id"),
 			OutputSchema: objectOutputSchema(),
 			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": false, "idempotentHint": false, "openWorldHint": true},
+		},
+		{
+			Name:        "cronplus.runs.list",
+			Title:       "List Runs",
+			Description: "Read run history for an imported task, newest first. Diagnostic package checks are not included because they do not create imported-task run history.",
+			InputSchema: objectSchema(map[string]any{
+				"task_id": stringProperty("Imported CronPlus task ID."),
+			}, "task_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
 		},
 		{
 			Name:        "cronplus.runs.get",
@@ -224,6 +244,19 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Post("/api/tasks/check", map[string]string{"path": args.Path})
 		}), nil
+	case "cronplus.tasks.check":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/tasks/"+pathID(args.TaskID)+"/check", nil)
+		}), nil
 	case "cronplus.tasks.import":
 		var args struct {
 			Path    string `json:"path"`
@@ -301,6 +334,19 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 		}
 		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
 			return c.Post("/api/tasks/"+pathID(args.TaskID)+"/run", nil)
+		}), nil
+	case "cronplus.runs.list":
+		var args struct {
+			TaskID string `json:"task_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.TaskID) == "" {
+			return nil, invalidParams("task_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/tasks/" + pathID(args.TaskID) + "/runs")
 		}), nil
 	case "cronplus.runs.get":
 		var args runLookupArgs

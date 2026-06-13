@@ -87,6 +87,61 @@ func TestValidateTaskPackageDoesNotRequireDaemon(t *testing.T) {
 	}
 }
 
+func TestCheckImportedTaskToolCallsDaemonEndpoint(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPost {
+			t.Fatalf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/tasks/task-1/check" {
+			t.Fatalf("path = %s, want imported task check endpoint", r.URL.Path)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"status":"success","summary":"ready"}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"cronplus.tasks.check","arguments":{"task_id":"task-1"}}}`)
+	result := responseResult(t, response)
+
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want object", result["structuredContent"])
+	}
+	if structured["status"] != "success" {
+		t.Fatalf("status = %v, want success; structured=%+v", structured["status"], structured)
+	}
+}
+
+func TestRunsListToolCallsDaemonEndpoint(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("method = %s, want GET", r.Method)
+		}
+		if r.URL.Path != "/api/tasks/task-1/runs" {
+			t.Fatalf("path = %s, want run history endpoint", r.URL.Path)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"runs":[{"id":"run-1","taskID":"task-1"}]}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"cronplus.runs.list","arguments":{"task_id":"task-1"}}}`)
+	result := responseResult(t, response)
+
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+	structured, ok := result["structuredContent"].(map[string]any)
+	if !ok {
+		t.Fatalf("structuredContent = %#v, want object", result["structuredContent"])
+	}
+	runs, ok := structured["runs"].([]any)
+	if !ok || len(runs) != 1 {
+		t.Fatalf("runs = %#v, want one run", structured["runs"])
+	}
+}
+
 func TestReadTaskRunResource(t *testing.T) {
 	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/tasks/task-1/runs/run-1" {

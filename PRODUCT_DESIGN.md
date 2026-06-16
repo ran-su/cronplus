@@ -83,7 +83,7 @@ cronplus (single Go binary)
 ├── Runner — os/exec with timeout
 ├── Delivery — pluggable drivers (Telegram)
 ├── Inbound — Telegram polling for commands
-├── Persistence — JSON file (~/.config/cronplus/state.json)
+├── Persistence — SQLite database (~/.config/cronplus/state.db)
 ├── REST API — net/http
 ├── SSE — real-time push to web UI
 ├── MCP stdio adapter — `cronplus mcp`, calls the running daemon over REST
@@ -96,7 +96,7 @@ cronplus (single Go binary)
 2. **Environment**: System Python by default, with optional managed venv per task or custom venv path. Import and reload return after manifest validation; managed-venv creation and `pip install` run in the background and block runs until `environmentSetup.state` is `ready`. Environment management reports venv size, resolved Python/requirements paths, and setup timestamps. Managed venv rebuild removes the package-local `.cronplus-venv` and prepares it again; custom `venv_path` directories are inspected but not deleted.
 3. **Delivery**: After a run, evaluate send_on conditions, render message template, send via driver.
 4. **Inbound Commands**: Telegram long-polling for /status, /list, /run, /help, etc.
-5. **Persistence**: JSON file with atomic writes. State restored on daemon restart.
+5. **Persistence**: SQLite database at `~/.config/cronplus/state.db`. State restored on daemon restart. Legacy `state.json` files are imported automatically on first SQLite startup; task, delivery, and app configuration are preserved, while historical runs are imported best-effort. A pre-migration JSON backup is written beside the legacy state file before import.
 6. **Auth**: Auto-generated token at `~/.config/cronplus/auth-token`. Stable across upgrades.
 7. **Task Lifecycle**: Import registers a package, reload re-reads its manifest, remove import unregisters it without deleting package files.
 8. **Missed Runs**: Missed scheduled times are skipped; CronPlus does not backfill runs after downtime.

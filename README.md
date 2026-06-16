@@ -264,7 +264,7 @@ For imported tasks, use `cronplus.runs.start` to create real run history and `cr
 | **Contract Checks** | CLI validation and run checks for AI-authored packages |
 | **MCP** | Local stdio MCP adapter for AI clients |
 | **Autostart** | macOS LaunchAgent install/status/uninstall command |
-| **Persistence** | JSON file at `~/.config/cronplus/state.json` |
+| **Persistence** | SQLite state at `~/.config/cronplus/state.db` with automatic legacy JSON import |
 | **Auth** | Token file, auto-auth for localhost |
 | **Single Binary** | Web UI embedded via `go:embed` |
 
@@ -353,6 +353,8 @@ make build
 make test
 ```
 
+SQLite persistence uses `github.com/mattn/go-sqlite3`, so builds need CGO enabled and a working C compiler. The release workflow builds macOS binaries with CGO enabled.
+
 ### Configuration Flags
 
 ```bash
@@ -398,7 +400,8 @@ All data stored in `~/.config/cronplus/`:
 |---|---|
 | `auth-token` | API authentication token (stable across upgrades) |
 | `daemon.lock` | Single-daemon lock with current PID, port, and start time |
-| `state.json` | Persisted tasks, profiles, run history |
+| `state.db` | SQLite state database for imported tasks, profiles, settings, commands, and run history |
+| `state.json` | Legacy JSON state file, imported once into `state.db` when present |
 
 ## License
 

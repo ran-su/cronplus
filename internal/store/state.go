@@ -1,10 +1,9 @@
 package store
 
 import (
-	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -38,25 +37,36 @@ type Settings struct {
 	WebServerBind string `json:"webServerBind"`
 }
 
-// Store manages JSON-file persistence of app state.
+// Store manages SQLite persistence of app state, with a one-time import path
+// from legacy JSON state files.
 type Store struct {
-	mu   sync.Mutex
-	path string
+	mu       sync.Mutex
+	path     string
+	dbPath   string
+	jsonPath string
 }
 
-// New creates a store backed by a JSON file.
-// Defaults to ~/.config/cronplus/state.json.
+// New creates a store backed by SQLite. Passing a legacy state.json path stores
+// the primary database beside it as state.db and uses the JSON file only as a
+// one-time import source.
+// Defaults to ~/.config/cronplus/state.db.
 func New(path string) *Store {
 	if path == "" {
 		home, _ := os.UserHomeDir()
 		path = filepath.Join(home, ".config", "cronplus", "state.json")
 	}
-	return &Store{path: path}
+	jsonPath, dbPath := statePaths(path)
+	return &Store{path: dbPath, dbPath: dbPath, jsonPath: jsonPath}
 }
 
-// Path returns the file path for the state store.
+// Path returns the primary SQLite state file path.
 func (s *Store) Path() string {
 	return s.path
+}
+
+// JSONPath returns the legacy JSON state file path used for one-time imports.
+func (s *Store) JSONPath() string {
+	return s.jsonPath
 }
 
 // Load reads the persisted state from disk.
@@ -65,30 +75,12 @@ func (s *Store) Load() (*State, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	data, err := os.ReadFile(s.path)
-	if os.IsNotExist(err) {
-		return s.defaultState(), nil
-	}
+	state, err := s.loadSQLiteLocked()
 	if err != nil {
-		return nil, fmt.Errorf("failed to read state: %w", err)
+		return nil, err
 	}
 
-	var state State
-	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("failed to parse state: %w", err)
-	}
-
-	if state.RunHistory == nil {
-		state.RunHistory = make(map[string][]models.RunRecord)
-	}
-	if state.Settings.WebServerPort == 0 {
-		state.Settings.WebServerPort = 9876
-	}
-	if state.Settings.WebServerBind == "" {
-		state.Settings.WebServerBind = "127.0.0.1"
-	}
-
-	return &state, nil
+	return state, nil
 }
 
 // Save writes the state to disk atomically.
@@ -96,36 +88,67 @@ func (s *Store) Save(state *State) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	dir := filepath.Dir(s.path)
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return fmt.Errorf("failed to create config dir: %w", err)
-	}
+	normalizeState(state)
 
-	data, err := json.MarshalIndent(state, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal state: %w", err)
-	}
-
-	// Atomic write: write to temp file, then rename
-	tmpPath := s.path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0600); err != nil {
-		return fmt.Errorf("failed to write state: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, s.path); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to commit state: %w", err)
-	}
-
-	return nil
+	return s.saveSQLiteLocked(state)
 }
 
 func (s *Store) defaultState() *State {
 	return &State{
-		RunHistory: make(map[string][]models.RunRecord),
+		Tasks:            []PersistedTask{},
+		DeliveryProfiles: []models.DeliveryProfile{},
+		RunHistory:       make(map[string][]models.RunRecord),
+		ActiveRuns:       []models.ActiveRunInfo{},
+		CommandLog:       []models.CommandRecord{},
 		Settings: Settings{
 			WebServerPort: 9876,
 			WebServerBind: "127.0.0.1",
 		},
+	}
+}
+
+func normalizeState(state *State) {
+	if state == nil {
+		return
+	}
+	if state.Tasks == nil {
+		state.Tasks = []PersistedTask{}
+	}
+	if state.DeliveryProfiles == nil {
+		state.DeliveryProfiles = []models.DeliveryProfile{}
+	}
+	for i := range state.DeliveryProfiles {
+		if state.DeliveryProfiles[i].Config == nil {
+			state.DeliveryProfiles[i].Config = map[string]string{}
+		}
+	}
+	if state.RunHistory == nil {
+		state.RunHistory = make(map[string][]models.RunRecord)
+	}
+	if state.ActiveRuns == nil {
+		state.ActiveRuns = []models.ActiveRunInfo{}
+	}
+	if state.CommandLog == nil {
+		state.CommandLog = []models.CommandRecord{}
+	}
+	if state.Settings.WebServerPort == 0 {
+		state.Settings.WebServerPort = 9876
+	}
+	if state.Settings.WebServerBind == "" {
+		state.Settings.WebServerBind = "127.0.0.1"
+	}
+}
+
+func statePaths(path string) (string, string) {
+	if path == "" {
+		home, _ := os.UserHomeDir()
+		path = filepath.Join(home, ".config", "cronplus", "state.json")
+	}
+	ext := strings.ToLower(filepath.Ext(path))
+	switch ext {
+	case ".db", ".sqlite", ".sqlite3":
+		return strings.TrimSuffix(path, filepath.Ext(path)) + ".json", path
+	default:
+		return path, strings.TrimSuffix(path, filepath.Ext(path)) + ".db"
 	}
 }

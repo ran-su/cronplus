@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"time"
 
-	_ "github.com/mattn/go-sqlite3"
 	"github.com/ran-su/cronplus/internal/models"
+	_ "modernc.org/sqlite"
 )
 
 const sqliteStateUserVersion = 1
@@ -69,7 +69,7 @@ func (s *Store) saveSQLiteLocked(state *State) error {
 }
 
 func (s *Store) openSQLiteLocked() (*sql.DB, error) {
-	db, err := sql.Open("sqlite3", s.dbPath)
+	db, err := sql.Open("sqlite", s.dbPath)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open SQLite state: %w", err)
 	}

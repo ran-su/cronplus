@@ -353,8 +353,6 @@ make build
 make test
 ```
 
-SQLite persistence uses `github.com/mattn/go-sqlite3`, so builds need CGO enabled and a working C compiler. The release workflow builds macOS binaries with CGO enabled.
-
 ### Configuration Flags
 
 ```bash

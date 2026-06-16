@@ -203,9 +203,12 @@ func TestReloadManagedVenvTaskWhileRunActiveRecordsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
 	}
-	if err := engine.StartTaskRun(task.ID, "manual"); err != nil {
-		t.Fatalf("StartTaskRun: %v", err)
-	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := engine.RunTask(task.ID, "manual")
+		runDone <- err
+	}()
 	waitForActiveRunDetail(t, engine, task.ID)
 
 	manifest := `manifest_version: 1
@@ -228,13 +231,15 @@ schedule:
 		t.Fatalf("ReloadTask: %v", err)
 	}
 
-	deadline := time.Now().Add(3 * time.Second)
-	for engine.IsRunning(task.ID) && time.Now().Before(deadline) {
-		time.Sleep(20 * time.Millisecond)
-	}
-	if engine.IsRunning(task.ID) {
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunTask: %v", err)
+		}
+	case <-time.After(3 * time.Second):
 		t.Fatal("task still running after deadline")
 	}
+	waitForEnvironmentState(t, engine, task.ID, "ready", 2*time.Second)
 
 	history := engine.RunHistory(task.ID)
 	if len(history) != 1 {

@@ -66,29 +66,15 @@ schedule:
 }
 
 func TestRunTaskRejectsPendingEnvironmentSetup(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("print('ok')\n"), 0644); err != nil {
-		t.Fatalf("write script: %v", err)
+	pendingDir := t.TempDir()
+	slowPython := filepath.Join(pendingDir, "slow-python")
+	if err := os.WriteFile(slowPython, []byte("#!/bin/sh\nsleep 5\nexit 1\n"), 0755); err != nil {
+		t.Fatalf("write slow python: %v", err)
 	}
-	manifest := `manifest_version: 1
-script:
-  path: ./script.py
-  name: Pending Env
-runtime:
-  environment:
-    strategy: managed_venv
-    python_base_interpreter: /definitely/missing/python
-  timeout_seconds: 5
-  max_output_kb: 64
-schedule:
-  expression: "* * * * *"
-`
-	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
-		t.Fatalf("write manifest: %v", err)
-	}
+	writeManagedEnvTaskPackage(t, pendingDir, slowPython)
 
 	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
-	task, err := engine.ImportTask(dir, true)
+	task, err := engine.ImportTask(pendingDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
 	}
@@ -108,13 +94,42 @@ schedule:
 		t.Fatalf("StartTaskRun error = %v, want ErrEnvironmentSetupPending", runErr)
 	}
 
-	waitForEnvironmentState(t, engine, task.ID, "failed", 10*time.Second)
+	failedDir := t.TempDir()
+	writeManagedEnvTaskPackage(t, failedDir, "/definitely/missing/python")
+	failedTask, err := engine.ImportTask(failedDir, true)
+	if err != nil {
+		t.Fatalf("Import failed task: %v", err)
+	}
+	waitForEnvironmentState(t, engine, failedTask.ID, "failed", 10*time.Second)
 
-	req = httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/run", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/tasks/"+failedTask.ID+"/run", nil)
 	rec = httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("failed env status = %d, want %d; body=%s", rec.Code, http.StatusBadRequest, rec.Body.String())
+	}
+}
+
+func writeManagedEnvTaskPackage(t *testing.T, dir, python string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("print('ok')\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	manifest := `manifest_version: 1
+script:
+  path: ./script.py
+  name: Pending Env
+runtime:
+  environment:
+    strategy: managed_venv
+    python_base_interpreter: ` + python + `
+  timeout_seconds: 5
+  max_output_kb: 64
+schedule:
+  expression: "* * * * *"
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
 	}
 }
 

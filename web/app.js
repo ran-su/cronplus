@@ -692,8 +692,8 @@ function renderTaskDetail(path) {
             ${task.manifestStatus?.changed ? '<span class="badge badge-warning">Manifest Changed</span>' : ''}
             ${renderEnvironmentSetupBadge(task.environmentSetup, true)}
             <div class="detail-actions">
-                <button class="btn btn-primary" onclick="runTask('${id}')">▶ Run Now</button>
-                <button class="btn" onclick="checkImportedTask('${id}')">Check</button>
+                <button class="btn btn-primary" title="Start a real imported-task run. This creates run history and can satisfy dependencies." onclick="runTask('${id}')">▶ Run Now</button>
+                <button class="btn" title="Run a diagnostic package probe. This does not create run history or satisfy dependencies." onclick="checkImportedTask('${id}')">Diagnostic Check</button>
                 <button class="btn" onclick="reloadTask('${id}')">Reload Manifest</button>
                 <button class="btn" onclick="previewDelivery('${id}')">Preview Delivery</button>
                 <button class="btn" onclick="toggleTask('${id}', ${!task.enabled})">${task.enabled ? 'Disable' : 'Enable'}</button>
@@ -867,9 +867,10 @@ function renderTaskDependenciesCard(task, health, dependentsReport) {
     return `
         <div class="detail-card dependency-card">
             <div class="card-title-row">
-                <h3>Dependencies</h3>
+                <h3>Upstream Dependencies</h3>
                 <span class="badge badge-${dependencyBadgeClass(status)}">${esc(status)}</span>
             </div>
+            ${health?.summary ? `<p class="card-copy">${esc(health.summary)}</p>` : ''}
             ${dependencies.length ? `<div class="dependency-list">
                 ${dependencies.map(dep => `
                     <div class="dependency-row dependency-${esc(dep.status || 'unknown')}">
@@ -881,8 +882,8 @@ function renderTaskDependenciesCard(task, health, dependentsReport) {
                         <span class="badge badge-${dependencyBadgeClass(dep.status)}">${esc(dep.status || 'unknown')}</span>
                     </div>
                 `).join('')}
-            </div>` : `<p class="muted-copy">${hasConfiguredDependencies ? 'Loading dependency health...' : 'No upstream dependencies.'}</p>`}
-            <div class="manifest-row"><span class="label">Dependents</span><span class="value">${dependents.length}</span></div>
+            </div>` : `<p class="muted-copy">${hasConfiguredDependencies ? 'Loading dependency health before this task can run...' : 'No upstream dependencies gate this task.'}</p>`}
+            <div class="manifest-row"><span class="label">Downstream Dependents</span><span class="value">${dependents.length}</span></div>
             ${dependents.length ? `<div class="usage-list dependency-usage">
                 ${dependents.slice(0, 5).map(dep => `<a href="#/tasks/${esc(dep.taskID)}">${esc(dep.taskName)}</a>`).join('')}
                 ${dependents.length > 5 ? `<span>${dependents.length - 5} more</span>` : ''}
@@ -1312,7 +1313,7 @@ function renderHealthContent() {
         <div class="health-grid">
             <div class="detail-card">
                 <h3>Storage</h3>
-                ${renderUsageRow('State File', storage.stateFile)}
+                ${renderUsageRow('State DB', storage.stateFile)}
                 ${renderUsageRow('Config Dir', storage.configDir)}
                 ${renderUsageRow('Task Packages', storage.taskPackages)}
                 ${renderUsageRow('Environments', storage.environments)}
@@ -1321,7 +1322,7 @@ function renderHealthContent() {
                 <h3>Daemon</h3>
                 <div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div>
                 <div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div>
-                <div class="manifest-row"><span class="label">State File</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
+                <div class="manifest-row"><span class="label">State DB</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
                 <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
             </div>
         </div>
@@ -1754,7 +1755,7 @@ function renderSettings() {
             <h3>Daemon</h3>
             <div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div>
             <div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div>
-            <div class="manifest-row"><span class="label">State File</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
+            <div class="manifest-row"><span class="label">State DB</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
             <div class="manifest-row"><span class="label">Token File</span><span class="value">${esc(server.tokenPath || '~/.config/cronplus/auth-token')}</span></div>
             <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
         </div>
@@ -1898,7 +1899,7 @@ function promptImportTask() {
                 <div id="import-check-result" class="import-check-slot"></div>
                 <div class="modal-actions">
                     <button class="btn" onclick="document.getElementById('import-modal').remove()">Cancel</button>
-                    <button class="btn" onclick="checkImportPackage()">Check Package</button>
+                    <button class="btn" title="Run a diagnostic package probe before import. This does not create run history or satisfy dependencies." onclick="checkImportPackage()">Diagnostic Check</button>
                     <button class="btn btn-primary" onclick="doImportTask()">Import</button>
                 </div>
             </div>
@@ -1961,7 +1962,7 @@ async function checkImportPackage() {
         return;
     }
     input.style.borderColor = '';
-    resultEl.innerHTML = '<div class="check-panel"><h3>Package Check</h3><p>Checking package...</p></div>';
+    resultEl.innerHTML = '<div class="check-panel"><h3>Diagnostic Package Check</h3><p>Checking package...</p><p class="check-note">This probe can run the script, but it will not create imported-task run history or satisfy dependencies.</p></div>';
     const result = await api('POST', '/api/tasks/check', { path });
     if (result?.error) {
         resultEl.innerHTML = `<div class="delivery-error">${esc(result.message || 'Package check failed')}</div>`;
@@ -2241,8 +2242,9 @@ function renderTaskPackageCheck(result) {
         <div class="check-panel check-${esc(result.status || 'warning')}">
             <div class="check-header">
                 <div>
-                    <h3>Package Check</h3>
+                    <h3>Diagnostic Package Check</h3>
                     <p>${esc(result.summary || 'Check complete.')}</p>
+                    <p class="check-note">This probe can run the script, but it does not create imported-task run history, trigger delivery, or satisfy dependencies.</p>
                 </div>
                 <span class="badge badge-${statusBadgeClass(result.status)}">${esc(result.status || 'unknown')}</span>
             </div>

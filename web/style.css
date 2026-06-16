@@ -782,6 +782,12 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     font-size: 13px;
 }
 
+.card-copy {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-bottom: 12px;
+}
+
 .schedule-expression {
     font-family: var(--font-mono);
     font-size: 18px;
@@ -877,6 +883,13 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 .check-header p,
 .diagnosis-header p {
     color: var(--text-primary);
+}
+
+.check-header .check-note,
+.check-note {
+    color: var(--text-secondary);
+    font-size: 13px;
+    margin-top: 6px;
 }
 
 .check-grid {
@@ -1059,12 +1072,23 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     padding: 40px;
     width: 500px;
     max-width: 90vw;
+    max-height: calc(100vh - 48px);
     position: relative;
-    overflow: hidden;
+    overflow-y: auto;
 }
 
 .modal h2 { font-size: 22px; margin-bottom: 24px; font-weight: 700; }
-.modal-actions { display: flex; gap: 12px; justify-content: flex-end; margin-top: 32px; }
+.modal-actions {
+    position: sticky;
+    bottom: -40px;
+    z-index: 2;
+    display: flex;
+    gap: 12px;
+    justify-content: flex-end;
+    margin: 32px -40px -40px;
+    padding: 16px 40px 40px;
+    background: linear-gradient(180deg, rgba(11, 12, 16, 0), var(--bg-secondary) 28%);
+}
 .modal-wide {
     width: 640px;
 }

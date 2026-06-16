@@ -25,7 +25,7 @@ Three-step flow:
 | Login screen | n/a | Token input shown when auto-auth/localStorage token fails |
 | Dashboard | `/` | Task counts, next run, recent failures, task cards |
 | Tasks | `/tasks` | Task list with status, enable/disable, run buttons |
-| Task Detail | `/tasks/:id` | Manifest status, environment details and size, dependency health, timeline, schedule preview, filterable run history, run/reload/remove-import/preview actions |
+| Task Detail | `/tasks/:id` | Manifest status, environment details and size, upstream dependency health, downstream dependents, timeline, schedule preview, filterable run history, diagnostic-check/run/reload/remove-import/preview actions |
 | Run Detail | `/tasks/:id/runs/:runId` | stdout, stderr, parsed result, run diagnostics, resource cleanup, delivery outcomes |
 | Delivery | `/delivery` | Profile list, create/test/delete |
 | Commands | `/commands` | Inbound command log |
@@ -39,14 +39,15 @@ Three-step flow:
 | `GET` | `/api/status` | Dashboard data |
 | `GET` | `/api/health` | Health and maintenance data |
 | `POST` | `/api/schedules/preview` | Preview upcoming runs for a task or cron expression |
+| `POST` | `/api/system/pick-directory` | Open the daemon host's native directory picker when supported |
 | `GET` | `/api/tasks` | List tasks |
 | `GET` | `/api/tasks/:id` | Task detail |
-| `POST` | `/api/tasks/check` | Check an arbitrary package path without importing it |
+| `POST` | `/api/tasks/check` | Run a diagnostic package check without importing it or creating imported-task run history |
 | `POST` | `/api/tasks/import` | Import task `{"path":"..."}` |
 | `DELETE` | `/api/tasks/:id` | Remove import without deleting package files |
 | `POST` | `/api/tasks/:id/reload` | Re-read manifest from disk |
-| `POST` | `/api/tasks/:id/check` | Check an imported task package without creating run history |
-| `POST` | `/api/tasks/:id/run` | Trigger run |
+| `POST` | `/api/tasks/:id/check` | Run a diagnostic package check for an imported task without creating run history |
+| `POST` | `/api/tasks/:id/run` | Trigger a real imported-task run that creates run history |
 | `GET` | `/api/tasks/:id/delivery-preview` | Preview latest-run delivery message |
 | `GET` | `/api/tasks/:id/dependencies/health` | Dependency health for all declared dependencies |
 | `GET` | `/api/tasks/:id/dependents` | Tasks that depend on this task |

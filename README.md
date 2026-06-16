@@ -144,7 +144,7 @@ dependencies:
 
 Each dependency uses exactly one of `slug` or `id`. `require_status` defaults to `success`; `max_age_seconds` is optional and disables freshness checks when omitted or set to `0`; `on_unhealthy` defaults to `skip` and can also be `fail`. When a dependency is unhealthy, CronPlus records a completed run with status `skipped` or `failure` without launching the dependent script, without publishing a `run_started` event, and without consuming an active-run slot.
 
-Package checks do not satisfy dependencies. `cronplus check` and the web UI **Check** action validate a package, prepare its environment, and run its script as a diagnostic probe, but they do not create imported-task run history. Use **Run Now** on the imported dependency task to create the successful run record that downstream dependencies require.
+Package checks do not satisfy dependencies. `cronplus check` and the web UI **Diagnostic Check** action validate a package, prepare its environment, and run its script as a diagnostic probe, but they do not create imported-task run history. Use **Run Now** on the imported dependency task to create the successful run record that downstream dependencies require.
 
 The web UI task detail page shows dependency health for every configured prerequisite and lists downstream dependents. The API and MCP tools expose the same information through dependency-health and dependents endpoints/tools.
 
@@ -155,7 +155,7 @@ CronPlus does not create task packages and does not edit task files. AI agents o
 | Action | Meaning |
 |---|---|
 | **Import** | Register a task package by directory path. Returns immediately after manifest validation; `managed_venv` environment setup continues in the background. |
-| **Check Package** | Validate a package, prepare its environment, and run its script once as a diagnostic probe. Does not create imported-task run history and does not satisfy task dependencies. |
+| **Diagnostic Check** | Validate a package, prepare its environment, and run its script once as a diagnostic probe. Does not create imported-task run history and does not satisfy task dependencies. |
 | **Reload Manifest** | Re-read the package manifest from disk, preserving task ID and run history |
 | **Run Now** | Execute the imported task immediately. Blocked while environment setup is `pending` or `failed` for `managed_venv` tasks. |
 | **Remove Import** | Unregister the task from CronPlus without deleting package files |
@@ -352,6 +352,8 @@ make build
 # Run tests
 make test
 ```
+
+Before cutting a release, run the focused verification path in [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md), including the browser UI smoke checks.
 
 ### Configuration Flags
 

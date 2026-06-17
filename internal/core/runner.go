@@ -17,10 +17,13 @@ import (
 )
 
 type RunScriptOptions struct {
-	TaskID     string
-	RunID      string
-	OnStarted  func(models.ActiveRunInfo)
-	OnFinished func(runID string)
+	TaskID         string
+	RunID          string
+	Trigger        string
+	OnStarted      func(models.ActiveRunInfo)
+	OnOutput       func(runID, stream, chunk string)
+	OnFinished     func(runID string)
+	RegisterCancel func(runID string, cancel func(string))
 }
 
 // RunScript executes a Python script and returns the outcome.
@@ -35,8 +38,10 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		opts.RunID = generateID()
 	}
 	timeout := time.Duration(m.Runtime.TimeoutSeconds) * time.Second
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
+	ctx, timeoutCancel := context.WithTimeout(context.Background(), timeout)
+	defer timeoutCancel()
+	cancelCtx, cancelRun := context.WithCancelCause(ctx)
+	defer cancelRun(nil)
 
 	grace := time.Duration(m.Runtime.ResourceLimits.GracefulKillSeconds) * time.Second
 	if grace <= 0 {
@@ -88,6 +93,14 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 	if err := cmd.Start(); err != nil {
 		return launchFailureOutcome(m, pythonExe, scriptPath, workingDir, runDir, err)
 	}
+	if opts.RegisterCancel != nil {
+		opts.RegisterCancel(opts.RunID, func(reason string) {
+			if strings.TrimSpace(reason) == "" {
+				reason = "Run cancellation requested."
+			}
+			cancelRun(fmt.Errorf("%s", reason))
+		})
+	}
 
 	diagnostics.RootPID = cmd.Process.Pid
 	if pgid, err := processGroupID(cmd.Process.Pid); err == nil {
@@ -97,12 +110,19 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 	startedReported := false
 	if opts.OnStarted != nil {
 		opts.OnStarted(models.ActiveRunInfo{
-			TaskID:         opts.TaskID,
-			RunID:          opts.RunID,
-			RootPID:        diagnostics.RootPID,
-			ProcessGroupID: diagnostics.ProcessGroupID,
-			RunDirectory:   runDir,
-			StartedAt:      start,
+			TaskID:              opts.TaskID,
+			RunID:               opts.RunID,
+			Trigger:             opts.Trigger,
+			RootPID:             diagnostics.RootPID,
+			ProcessGroupID:      diagnostics.ProcessGroupID,
+			RunDirectory:        runDir,
+			PythonExecutable:    pythonExe,
+			ScriptPath:          scriptPath,
+			WorkingDirectory:    workingDir,
+			EnvironmentStrategy: m.Runtime.Environment.Strategy,
+			TimeoutSeconds:      m.Runtime.TimeoutSeconds,
+			MaxOutputKB:         m.Runtime.MaxOutputKB,
+			StartedAt:           start,
 		})
 		startedReported = true
 	}
@@ -121,11 +141,11 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 	copyWG.Add(2)
 	go func() {
 		defer copyWG.Done()
-		_, _ = io.Copy(io.MultiWriter(stdoutBuf, resultCapture), stdoutPipe)
+		_, _ = copyRunOutput(io.MultiWriter(stdoutBuf, resultCapture), stdoutPipe, opts.RunID, "stdout", opts.OnOutput)
 	}()
 	go func() {
 		defer copyWG.Done()
-		_, _ = io.Copy(stderrBuf, stderrPipe)
+		_, _ = copyRunOutput(stderrBuf, stderrPipe, opts.RunID, "stderr", opts.OnOutput)
 	}()
 
 	waitCh := make(chan error, 1)
@@ -135,10 +155,21 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 
 	var waitErr error
 	timedOut := ctx.Err() == context.DeadlineExceeded
+	canceled := false
+	cancelReason := ""
 	select {
 	case waitErr = <-waitCh:
-	case <-ctx.Done():
-		timedOut = true
+	case <-cancelCtx.Done():
+		if ctx.Err() == context.DeadlineExceeded {
+			timedOut = true
+		} else {
+			canceled = true
+			cancelReason = context.Cause(cancelCtx).Error()
+			diagnostics.Canceled = true
+			diagnostics.CancelReason = cancelReason
+			now := time.Now()
+			diagnostics.CancelRequestedAt = &now
+		}
 		diagnostics.Cleanup = mergeCleanup(diagnostics.Cleanup, terminateProcessGroup(diagnostics.ProcessGroupID, grace))
 		waitErr = <-waitCh
 	}
@@ -175,6 +206,12 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 	if timedOut {
 		stderrStr += fmt.Sprintf("\n[CronPlus] Script was terminated after %d-second timeout.", m.Runtime.TimeoutSeconds)
 	}
+	if canceled {
+		if cancelReason == "" {
+			cancelReason = "Run cancellation requested."
+		}
+		stderrStr += fmt.Sprintf("\n[CronPlus] Run was canceled: %s", cancelReason)
+	}
 	if diagnostics.Cleanup.ProcessGroupTerminated || diagnostics.Cleanup.ProcessGroupForceKilled || diagnostics.Cleanup.DetachedProcessesKilled > 0 {
 		stderrStr += fmt.Sprintf("\n[CronPlus] Resource cleanup: process_group_terminated=%t process_group_force_killed=%t detached_processes_killed=%d.",
 			diagnostics.Cleanup.ProcessGroupTerminated,
@@ -195,6 +232,17 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 			stderrStr += fmt.Sprintf("\n[CronPlus] Launch error: %s", waitErr.Error())
 		}
 	}
+	if canceled && parsed == nil {
+		exitCode = 130
+		parsed = &models.ParsedResult{
+			Status:  "failure",
+			Summary: "Run canceled.",
+			Data: map[string]any{
+				"reason": cancelReason,
+			},
+		}
+		diagnostics.StructuredResultFound = true
+	}
 
 	return &models.RunOutcome{
 		ExitCode:     exitCode,
@@ -204,6 +252,30 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		TimedOut:     timedOut,
 		DurationMs:   durationMs,
 		Diagnostics:  diagnostics,
+	}
+}
+
+func copyRunOutput(dst io.Writer, src io.Reader, runID, stream string, onOutput func(runID, stream, chunk string)) (int64, error) {
+	buf := make([]byte, 32*1024)
+	var written int64
+	for {
+		n, readErr := src.Read(buf)
+		if n > 0 {
+			chunk := buf[:n]
+			if _, writeErr := dst.Write(chunk); writeErr != nil && readErr == nil {
+				return written, writeErr
+			}
+			written += int64(n)
+			if onOutput != nil {
+				onOutput(runID, stream, string(chunk))
+			}
+		}
+		if readErr != nil {
+			if readErr == io.EOF {
+				return written, nil
+			}
+			return written, readErr
+		}
 	}
 }
 

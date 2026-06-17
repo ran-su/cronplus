@@ -14,6 +14,7 @@ var (
 	ErrEnvironmentSetupPending   = errors.New("environment setup in progress")
 	ErrEnvironmentSetupFailed    = errors.New("environment setup failed")
 	ErrEnvironmentNotRebuildable = errors.New("environment is not rebuildable")
+	ErrRunNotActive              = errors.New("run is not active")
 )
 
 // ManifestValidationError is returned when a task manifest fails validation.

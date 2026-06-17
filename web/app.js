@@ -22,6 +22,7 @@ let appState = {
     runDetails: {},
     runHistories: {},
     runFilters: {},
+    retentionCleanup: null,
     deliveries: [],
     commands: [],
     connected: true
@@ -413,6 +414,15 @@ document.addEventListener('click', (e) => {
                 break;
             case 'retry-health':
                 loadHealth({ force: true });
+                break;
+            case 'save-retention':
+                saveRetentionPolicy();
+                break;
+            case 'cleanup-retention':
+                cleanupRetentionNow();
+                break;
+            case 'cancel-active-run':
+                cancelActiveRun(actionButton.dataset.runId || '');
                 break;
             case 'retry-task-environment':
                 loadTaskEnvironment(actionButton.dataset.taskId || '', { force: true });
@@ -1326,43 +1336,109 @@ function renderHealthContent() {
                 <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
             </div>
         </div>
+        ${renderRetentionCard(h.retention || {})}
         ${renderActiveRuns(h.activeRuns || [])}
         ${renderAttentionItems(h.attentionItems || [])}
     `;
 }
 
 function renderUsageRow(label, usage) {
-    usage = usage || {};
-    return `
-        <div class="manifest-row">
-            <span class="label">${esc(label)}</span>
+	usage = usage || {};
+	return `
+		<div class="manifest-row">
+			<span class="label">${esc(label)}</span>
             <span class="value">${usage.path ? `${formatBytes(usage.bytes || 0)} · ${usage.files || 0} files` : 'N/A'}</span>
         </div>
         ${usage.error ? `<div class="delivery-error">${esc(usage.error)}</div>` : ''}
-    `;
+	`;
+}
+
+function renderRetentionCard(retention) {
+	const defaultMaxRuns = retention.defaultMaxRunsPerTask || 50;
+	const report = appState.retentionCleanup;
+	return `
+		<div class="detail-card retention-card">
+			<div class="card-title-row">
+				<div>
+					<h3>Run History Retention</h3>
+					<p class="card-copy">Max runs defaults to ${defaultMaxRuns} when set to 0. Output pruning keeps the newest bytes per stream.</p>
+				</div>
+				<button class="btn btn-sm" data-action="cleanup-retention">Cleanup Now</button>
+			</div>
+			<div class="retention-form">
+				<label>
+					<span>Max runs per task</span>
+					<input class="form-input" id="retention-max-runs" type="number" min="0" step="1" value="${Number(retention.maxRunsPerTask || defaultMaxRuns)}">
+				</label>
+				<label>
+					<span>Max age days</span>
+					<input class="form-input" id="retention-max-age" type="number" min="0" step="1" value="${Number(retention.maxRunAgeDays || 0)}">
+				</label>
+				<label>
+					<span>Output KB per stream</span>
+					<input class="form-input" id="retention-max-output" type="number" min="0" step="1" value="${Number(retention.maxRunOutputKB || 0)}">
+				</label>
+				<button class="btn btn-primary" data-action="save-retention">Save</button>
+			</div>
+			<div class="retention-meta">
+				<span>${retention.agePruningEnabled ? 'Age pruning on' : 'Age pruning off'}</span>
+				<span>${retention.outputPruningEnabled ? 'Output pruning on' : 'Output pruning off'}</span>
+			</div>
+			${report ? `<div class="retention-report">
+				<span>${report.runsDeleted || 0} runs deleted</span>
+				<span>${formatBytes(report.outputBytesPruned || 0)} output pruned</span>
+				<span>${report.tasksAffected || 0} tasks affected</span>
+			</div>` : ''}
+		</div>
+	`;
 }
 
 function renderActiveRuns(activeRuns) {
     if (!activeRuns.length) return '';
     return `
-        <div class="detail-card" style="margin-top:20px">
-            <h3>Active Runs</h3>
+        <div class="detail-card active-runs-card">
+            <div class="card-title-row">
+                <div>
+                    <h3>Active Runs</h3>
+                    <p class="card-copy">Live process details and recent output for currently running tasks.</p>
+                </div>
+            </div>
             <div class="run-history-list">
                 ${activeRuns.map(run => `
-                    <div class="run-history-row">
+                    <div class="run-history-row active-run-row">
                         <div class="run-history-primary">
-                            <span class="badge badge-warning">running</span>
-                            <strong>${esc(run.taskID)}</strong>
+                            <span class="badge badge-${run.cancelRequested ? 'danger' : 'warning'}">${run.cancelRequested ? 'canceling' : 'running'}</span>
+                            <strong>${esc(run.taskName || run.taskID)}</strong>
+                            ${run.trigger ? `<span class="badge badge-muted">${esc(run.trigger)}</span>` : ''}
                         </div>
+                        <button class="btn btn-sm btn-danger" data-action="cancel-active-run" data-run-id="${attr(run.runID)}" ${run.cancelRequested ? 'disabled' : ''}>Cancel</button>
                         <div class="run-history-meta">
                             <span><span class="run-history-label">Run ID</span>${esc(run.runID)}</span>
-                            <span><span class="run-history-label">Started</span>${formatTime(run.startedAt)}</span>
+                            <span><span class="run-history-label">Elapsed</span>${formatDurationMs(run.elapsedMs || 0)}</span>
                             <span><span class="run-history-label">Root PID</span>${run.rootPID || '—'}</span>
+                            <span><span class="run-history-label">Process Group</span>${run.processGroupID || '—'}</span>
+                            <span><span class="run-history-label">Started</span>${formatTime(run.startedAt)}</span>
+                            <span><span class="run-history-label">Python</span>${esc(run.pythonExecutable || '—')}</span>
+                            <span><span class="run-history-label">Working Dir</span>${esc(run.workingDirectory || '—')}</span>
                             <span><span class="run-history-label">Run Dir</span>${esc(run.runDirectory || '—')}</span>
                         </div>
+                        ${run.cancelReason ? `<div class="run-history-summary">Cancel reason: ${esc(run.cancelReason)}</div>` : ''}
+                        ${renderActiveRunLogs(run)}
                     </div>
                 `).join('')}
             </div>
+        </div>
+    `;
+}
+
+function renderActiveRunLogs(run) {
+    const stdout = run.stdoutTail || '';
+    const stderr = run.stderrTail || '';
+    if (!stdout && !stderr) return '';
+    return `
+        <div class="active-run-logs">
+            ${stdout ? `<div><span>STDOUT Tail</span><pre class="log-block active-run-log">${esc(stdout)}</pre></div>` : ''}
+            ${stderr ? `<div><span>STDERR Tail</span><pre class="log-block active-run-log">${esc(stderr)}</pre></div>` : ''}
         </div>
     `;
 }
@@ -1776,6 +1852,49 @@ async function runTask(id) {
     }
     toast('Run started', 'success');
     refreshAll();
+}
+
+async function saveRetentionPolicy() {
+    const maxRuns = parseNonNegativeInt(document.getElementById('retention-max-runs')?.value, 0);
+    const maxAge = parseNonNegativeInt(document.getElementById('retention-max-age')?.value, 0);
+    const maxOutput = parseNonNegativeInt(document.getElementById('retention-max-output')?.value, 0);
+    const result = await api('PUT', '/api/retention', {
+        maxRunsPerTask: maxRuns,
+        maxRunAgeDays: maxAge,
+        maxRunOutputKB: maxOutput
+    });
+    if (result?.error) {
+        toast(result.message || 'Retention settings could not be saved', 'error');
+        return;
+    }
+    appState.retentionCleanup = result;
+    appState.health = null;
+    toast('Retention settings saved', 'success');
+    await loadHealth({ force: true });
+}
+
+async function cleanupRetentionNow() {
+    const result = await api('POST', '/api/retention/cleanup');
+    if (result?.error) {
+        toast(result.message || 'Retention cleanup failed', 'error');
+        return;
+    }
+    appState.retentionCleanup = result;
+    appState.health = null;
+    toast('Retention cleanup finished', 'success');
+    await loadHealth({ force: true });
+}
+
+async function cancelActiveRun(runID) {
+    if (!runID) return;
+    const result = await api('POST', `/api/runs/active/${encodeURIComponent(runID)}/cancel`, { reason: 'Canceled from web UI.' });
+    if (result?.error) {
+        toast(result.message || 'Run could not be canceled', 'error');
+        return;
+    }
+    toast('Cancellation requested', 'info');
+    appState.health = null;
+    await loadHealth({ force: true });
 }
 
 async function toggleTask(id, enabled) {
@@ -2294,7 +2413,10 @@ function renderRunDiagnosis(run, options = {}) {
                     <h3>${options.compact ? 'Run Result' : 'What Happened'}</h3>
                     <p>${esc(diagnosis.summary || 'Run finished.')}</p>
                 </div>
-                <span class="badge badge-${statusBadgeClass(diagnosis.status)}">${esc(diagnosis.status || 'unknown')}</span>
+                <div class="diagnosis-badges">
+                    ${diagnosis.category ? `<span class="badge badge-muted">${esc(diagnosis.category.replace(/_/g, ' '))}</span>` : ''}
+                    <span class="badge badge-${statusBadgeClass(diagnosis.status)}">${esc(diagnosis.status || 'unknown')}</span>
+                </div>
             </div>
             ${causes.length ? `<div class="diagnosis-list">
                 <span>Causes</span>
@@ -2426,6 +2548,12 @@ function formatBytes(bytes) {
     if (bytes < 1024) return `${bytes}B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
     return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
+}
+
+function parseNonNegativeInt(value, fallback) {
+    const parsed = Number.parseInt(String(value || ''), 10);
+    if (!Number.isFinite(parsed) || parsed < 0) return fallback;
+    return parsed;
 }
 
 function formatTime(iso) {

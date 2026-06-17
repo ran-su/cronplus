@@ -308,6 +308,46 @@ func TestSimpleParityToolsCallDaemonEndpoints(t *testing.T) {
 			response:   `{"status":"healthy"}`,
 		},
 		{
+			name:       "active runs",
+			tool:       "cronplus.runs.active",
+			arguments:  `{}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/runs/active",
+			response:   `{"activeRuns":[]}`,
+		},
+		{
+			name:       "active run get",
+			tool:       "cronplus.runs.active_get",
+			arguments:  `{"run_id":"run-1"}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/runs/active/run-1",
+			response:   `{"runID":"run-1","status":"running"}`,
+		},
+		{
+			name:       "cancel run",
+			tool:       "cronplus.runs.cancel",
+			arguments:  `{"run_id":"run-1","reason":"test"}`,
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/runs/active/run-1/cancel",
+			response:   `{"ok":true}`,
+		},
+		{
+			name:       "retention get",
+			tool:       "cronplus.retention.get",
+			arguments:  `{}`,
+			wantMethod: http.MethodGet,
+			wantPath:   "/api/retention",
+			response:   `{"maxRunsPerTask":50}`,
+		},
+		{
+			name:       "retention cleanup",
+			tool:       "cronplus.retention.cleanup",
+			arguments:  `{}`,
+			wantMethod: http.MethodPost,
+			wantPath:   "/api/retention/cleanup",
+			response:   `{"runsDeleted":0}`,
+		},
+		{
 			name:       "dependency health",
 			tool:       "cronplus.tasks.dependency_health",
 			arguments:  `{"task_id":"task-1"}`,
@@ -403,6 +443,56 @@ func TestRunsListToolPassesFilters(t *testing.T) {
 	}
 }
 
+func TestRetentionUpdateToolPostsDaemonBody(t *testing.T) {
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/retention" {
+			t.Fatalf("request = %s %s, want PUT /api/retention", r.Method, r.URL.Path)
+		}
+		body := requestBodyMap(t, r)
+		if body["maxRunsPerTask"].(float64) != 10 || body["maxRunAgeDays"].(float64) != 7 || body["maxRunOutputKB"].(float64) != 64 {
+			t.Fatalf("body = %+v, want retention policy", body)
+		}
+		return jsonHTTPResponse(http.StatusOK, `{"runsDeleted":0,"policy":{"maxRunsPerTask":10}}`), nil
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"cronplus.retention.update","arguments":{"max_runs_per_task":10,"max_run_age_days":7,"max_run_output_kb":64}}}`)
+	result := responseResult(t, response)
+	if result["isError"] != false {
+		t.Fatalf("isError = %v, want false; result=%+v", result["isError"], result)
+	}
+}
+
+func TestRunsGetReturnsActiveRunDetail(t *testing.T) {
+	requestCount := 0
+	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
+		requestCount++
+		switch requestCount {
+		case 1:
+			if r.Method != http.MethodGet || r.URL.Path != "/api/tasks/task-1/runs/run-1" {
+				t.Fatalf("request 1 = %s %s, want completed run lookup", r.Method, r.URL.Path)
+			}
+			return jsonHTTPResponse(http.StatusNotFound, `{"error":"run_not_found","message":"missing"}`), nil
+		case 2:
+			if r.Method != http.MethodGet || r.URL.Path != "/api/runs/active/run-1" {
+				t.Fatalf("request 2 = %s %s, want active run lookup", r.Method, r.URL.Path)
+			}
+			return jsonHTTPResponse(http.StatusOK, `{"taskID":"task-1","runID":"run-1","stdoutTail":"ready"}`), nil
+		default:
+			t.Fatalf("unexpected request %d: %s %s", requestCount, r.Method, r.URL.Path)
+			return nil, nil
+		}
+	})
+
+	server := NewServer(client, "test")
+	response := handleTestMessage(t, server, `{"jsonrpc":"2.0","id":13,"method":"tools/call","params":{"name":"cronplus.runs.get","arguments":{"task_id":"task-1","run_id":"run-1"}}}`)
+	result := responseResult(t, response)
+	structured := result["structuredContent"].(map[string]any)
+	if structured["status"] != "running" || structured["stdoutTail"] != "ready" {
+		t.Fatalf("structured = %+v, want active running detail", structured)
+	}
+}
+
 func TestReadTaskRunResource(t *testing.T) {
 	client := testDaemonClient(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Path != "/api/tasks/task-1/runs/run-1" {
@@ -439,6 +529,24 @@ func TestReadNewManagementResources(t *testing.T) {
 			uri:      "cronplus://health",
 			wantPath: "/api/health",
 			response: `{"status":"healthy"}`,
+		},
+		{
+			name:     "active runs",
+			uri:      "cronplus://runs/active",
+			wantPath: "/api/runs/active",
+			response: `{"activeRuns":[]}`,
+		},
+		{
+			name:     "active run detail",
+			uri:      "cronplus://runs/active/run-1",
+			wantPath: "/api/runs/active/run-1",
+			response: `{"runID":"run-1"}`,
+		},
+		{
+			name:     "retention",
+			uri:      "cronplus://retention",
+			wantPath: "/api/retention",
+			response: `{"maxRunsPerTask":50}`,
 		},
 		{
 			name:     "task environment",

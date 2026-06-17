@@ -45,6 +45,20 @@ func (s *Server) listResources() map[string]any {
 			MimeType:    "application/json",
 		},
 		{
+			URI:         "cronplus://runs/active",
+			Name:        "active_runs",
+			Title:       "Active Runs",
+			Description: "Currently active runs with PID, elapsed time, execution paths, run directory, and live output tails.",
+			MimeType:    "application/json",
+		},
+		{
+			URI:         "cronplus://retention",
+			Name:        "retention",
+			Title:       "Retention Policy",
+			Description: "Run-history retention settings.",
+			MimeType:    "application/json",
+		},
+		{
 			URI:         "cronplus://tasks",
 			Name:        "tasks",
 			Title:       "Imported Tasks",
@@ -109,6 +123,13 @@ func (s *Server) listResourceTemplates() map[string]any {
 			MimeType:    "application/json",
 		},
 		{
+			URITemplate: "cronplus://runs/active/{run_id}",
+			Name:        "active_run",
+			Title:       "Active Run Detail",
+			Description: "One active CronPlus run with PID, elapsed time, execution paths, run directory, and live output tails.",
+			MimeType:    "application/json",
+		},
+		{
 			URITemplate: "cronplus://tasks/{task_id}/environment",
 			Name:        "task_environment",
 			Title:       "Task Environment",
@@ -152,6 +173,10 @@ func (s *Server) readResource(params json.RawMessage) (any, *rpcError) {
 		return s.daemonResource(uri, "application/json", "/api/status")
 	case "cronplus://health":
 		return s.daemonResource(uri, "application/json", "/api/health")
+	case "cronplus://runs/active":
+		return s.daemonResource(uri, "application/json", "/api/runs/active")
+	case "cronplus://retention":
+		return s.daemonResource(uri, "application/json", "/api/retention")
 	case "cronplus://tasks":
 		return s.daemonResource(uri, "application/json", "/api/tasks")
 	case "cronplus://deliveries":
@@ -173,7 +198,13 @@ func (s *Server) readResource(params json.RawMessage) (any, *rpcError) {
 	}
 
 	parts, ok := cronplusURIParts(uri)
-	if !ok || len(parts) == 0 || parts[0] != "tasks" {
+	if !ok || len(parts) == 0 {
+		return nil, &rpcError{Code: -32602, Message: "Unknown resource URI: " + uri}
+	}
+	if len(parts) == 3 && parts[0] == "runs" && parts[1] == "active" {
+		return s.daemonResource(uri, "application/json", "/api/runs/active/"+pathID(parts[2]))
+	}
+	if parts[0] != "tasks" {
 		return nil, &rpcError{Code: -32602, Message: "Unknown resource URI: " + uri}
 	}
 	if len(parts) == 2 {

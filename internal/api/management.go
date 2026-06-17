@@ -55,6 +55,92 @@ func handleRebuildTaskEnvironment(engine *core.Engine) http.HandlerFunc {
 	}
 }
 
+func handleGetActiveRuns(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, map[string]any{"activeRuns": engine.ActiveRuns()})
+	}
+}
+
+func handleGetActiveRun(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		info, err := engine.ActiveRun(r.PathValue("runId"))
+		if writeEngineError(w, err, http.StatusBadRequest, "active_run_failed") {
+			return
+		}
+		writeJSON(w, http.StatusOK, info)
+	}
+}
+
+func handleCancelRun(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Reason string `json:"reason"`
+		}
+		if r.Body != nil && r.ContentLength != 0 {
+			if err := readJSON(r, &body); err != nil {
+				writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+				return
+			}
+		}
+		info, err := engine.CancelRun(r.PathValue("runId"), body.Reason)
+		if writeEngineError(w, err, http.StatusBadRequest, "cancel_run_failed") {
+			return
+		}
+		writeJSON(w, http.StatusAccepted, map[string]any{
+			"ok":        true,
+			"activeRun": info,
+		})
+	}
+}
+
+func handleGetRetention(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, engine.RetentionPolicy())
+	}
+}
+
+func handleUpdateRetention(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			MaxRunsPerTask *int `json:"maxRunsPerTask"`
+			MaxRunAgeDays  *int `json:"maxRunAgeDays"`
+			MaxRunOutputKB *int `json:"maxRunOutputKB"`
+		}
+		if err := readJSON(r, &body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_request", "Invalid JSON body.")
+			return
+		}
+		settings := engine.Settings()
+		maxRunsPerTask := settings.MaxRunsPerTask
+		maxRunAgeDays := settings.MaxRunAgeDays
+		maxRunOutputKB := settings.MaxRunOutputKB
+		if body.MaxRunsPerTask != nil {
+			maxRunsPerTask = *body.MaxRunsPerTask
+		}
+		if body.MaxRunAgeDays != nil {
+			maxRunAgeDays = *body.MaxRunAgeDays
+		}
+		if body.MaxRunOutputKB != nil {
+			maxRunOutputKB = *body.MaxRunOutputKB
+		}
+		report := engine.UpdateRetentionPolicy(maxRunsPerTask, maxRunAgeDays, maxRunOutputKB)
+		if !persistOrError(w, engine) {
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	}
+}
+
+func handleCleanupRetention(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		report := engine.CleanupRetentionNow()
+		if !persistOrError(w, engine) {
+			return
+		}
+		writeJSON(w, http.StatusOK, report)
+	}
+}
+
 func handleSchedulePreview(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var body struct {
@@ -167,6 +253,7 @@ func handleGetHealth(engine *core.Engine, info ServerInfo) http.HandlerFunc {
 			GeneratedAt:    time.Now(),
 			Status:         "healthy",
 			Summary:        "CronPlus is running normally.",
+			Retention:      engine.RetentionPolicy(),
 			ActiveRuns:     engine.ActiveRuns(),
 			AttentionItems: buildAttentionItems(engine, tasks),
 		}

@@ -31,6 +31,8 @@ func writeEngineError(w http.ResponseWriter, err error, fallbackStatus int, fall
 		writeError(w, http.StatusBadRequest, "environment_not_rebuildable", err.Error())
 	case errors.Is(err, core.ErrDeliveryProfileNotFound):
 		writeError(w, http.StatusNotFound, "profile_not_found", err.Error())
+	case errors.Is(err, core.ErrRunNotActive):
+		writeError(w, http.StatusNotFound, "run_not_active", err.Error())
 	default:
 		var manifestErr *core.ManifestValidationError
 		if errors.As(err, &manifestErr) {

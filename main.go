@@ -100,7 +100,10 @@ func main() {
 	if err := engine.RestoreState(); err != nil {
 		log.Printf("[CronPlus] Warning: failed to restore state: %v", err)
 	}
-	engine.SetSettings(store.Settings{WebServerPort: listenPort, WebServerBind: "127.0.0.1"})
+	settings := engine.Settings()
+	settings.WebServerPort = listenPort
+	settings.WebServerBind = "127.0.0.1"
+	engine.SetSettings(settings)
 
 	go scheduler.Start(ctx)
 

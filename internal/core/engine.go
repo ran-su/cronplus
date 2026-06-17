@@ -20,16 +20,17 @@ import (
 
 // Engine is the central state owner for the daemon.
 type Engine struct {
-	mu                  sync.RWMutex
-	tasks               []*models.Task
-	deliveryProfiles    []models.DeliveryProfile
-	runHistory          map[string][]models.RunRecord
-	activeRuns          map[string]bool
-	activeRunDetails    map[string]models.ActiveRunInfo
-	taskGenerations     map[string]int64 // Invalidates active runs after removal.
-	envSetupGenerations map[string]int64 // Invalidates stale environment setup workers.
-	envSetupLocks       map[string]*sync.Mutex
-	commandLog          []models.CommandRecord
+	mu                   sync.RWMutex
+	tasks                []*models.Task
+	deliveryProfiles     []models.DeliveryProfile
+	runHistory           map[string][]models.RunRecord
+	activeRuns           map[string]bool
+	activeRunDetails     map[string]models.ActiveRunInfo
+	activeRunControllers map[string]*activeRunController
+	taskGenerations      map[string]int64 // Invalidates active runs after removal.
+	envSetupGenerations  map[string]int64 // Invalidates stale environment setup workers.
+	envSetupLocks        map[string]*sync.Mutex
+	commandLog           []models.CommandRecord
 
 	store                *store.Store
 	scheduler            *Scheduler
@@ -45,12 +46,25 @@ type Engine struct {
 	OnDeliveryProfilesChanged func()
 }
 
+type activeRunController struct {
+	cancel            func(string)
+	cancelRequested   bool
+	cancelReason      string
+	cancelRequestedAt *time.Time
+	stdoutTail        string
+	stderrTail        string
+}
+
+const activeRunTailLimit = 8192
+const defaultMaxRunsPerTask = 50
+
 // NewEngine creates a new engine with the given store and delivery service.
 func NewEngine(s *store.Store, deliverySvc *delivery.Service) *Engine {
 	return &Engine{
 		runHistory:           make(map[string][]models.RunRecord),
 		activeRuns:           make(map[string]bool),
 		activeRunDetails:     make(map[string]models.ActiveRunInfo),
+		activeRunControllers: make(map[string]*activeRunController),
 		taskGenerations:      make(map[string]int64),
 		envSetupGenerations:  make(map[string]int64),
 		envSetupLocks:        make(map[string]*sync.Mutex),
@@ -59,7 +73,7 @@ func NewEngine(s *store.Store, deliverySvc *delivery.Service) *Engine {
 		DeliveryService:      deliverySvc,
 		settings:             store.Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
 		environmentSetupFunc: EnsureEnvironment,
-		maxRunsPerTask:       50,
+		maxRunsPerTask:       defaultMaxRunsPerTask,
 		maxConcurrentRuns:    2,
 	}
 }
@@ -73,13 +87,7 @@ func (e *Engine) SetScheduler(scheduler *Scheduler) {
 func (e *Engine) SetSettings(settings store.Settings) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	if settings.WebServerPort <= 0 {
-		settings.WebServerPort = 9876
-	}
-	if settings.WebServerBind == "" {
-		settings.WebServerBind = "127.0.0.1"
-	}
-	e.settings = settings
+	e.applySettingsLocked(settings)
 }
 
 func (e *Engine) SetMaxConcurrentRuns(n int) {
@@ -97,6 +105,35 @@ func (e *Engine) MaxConcurrentRuns() int {
 	return e.maxConcurrentRuns
 }
 
+func (e *Engine) Settings() store.Settings {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.settings
+}
+
+func (e *Engine) RetentionPolicy() models.RetentionPolicy {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.retentionPolicyLocked()
+}
+
+func (e *Engine) UpdateRetentionPolicy(maxRunsPerTask, maxRunAgeDays, maxRunOutputKB int) models.RetentionCleanupReport {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	settings := e.settings
+	settings.MaxRunsPerTask = clampNonNegative(maxRunsPerTask)
+	settings.MaxRunAgeDays = clampNonNegative(maxRunAgeDays)
+	settings.MaxRunOutputKB = clampNonNegative(maxRunOutputKB)
+	e.applySettingsLocked(settings)
+	return e.applyRunRetentionLocked()
+}
+
+func (e *Engine) CleanupRetentionNow() models.RetentionCleanupReport {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.applyRunRetentionLocked()
+}
+
 // RestoreState loads persisted state and re-imports task manifests.
 func (e *Engine) RestoreState() error {
 	state, err := e.store.Load()
@@ -109,13 +146,7 @@ func (e *Engine) RestoreState() error {
 	e.runHistory = cloneRunHistoryMap(state.RunHistory)
 	e.commandLog = append([]models.CommandRecord(nil), state.CommandLog...)
 	if state.Settings.WebServerPort > 0 || state.Settings.WebServerBind != "" {
-		if state.Settings.WebServerPort <= 0 {
-			state.Settings.WebServerPort = 9876
-		}
-		if state.Settings.WebServerBind == "" {
-			state.Settings.WebServerBind = "127.0.0.1"
-		}
-		e.settings = state.Settings
+		e.applySettingsLocked(state.Settings)
 	}
 	e.mu.Unlock()
 	hadPersistedActiveRuns := len(state.ActiveRuns) > 0
@@ -491,13 +522,22 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 	} else {
 		// Run the script (this blocks — called in a goroutine by the scheduler/API)
 		outcome = RunScriptWithOptions(task.Manifest, manifestDir, RunScriptOptions{
-			TaskID: taskID,
-			RunID:  runID,
+			TaskID:  taskID,
+			RunID:   runID,
+			Trigger: trigger,
 			OnStarted: func(info models.ActiveRunInfo) {
+				info.TaskName = task.DisplayName
+				info.TaskSlug = task.Slug()
 				e.recordActiveRun(info, reserved.generation)
+			},
+			OnOutput: func(runID, stream, chunk string) {
+				e.recordActiveRunOutput(runID, stream, chunk)
 			},
 			OnFinished: func(runID string) {
 				e.clearActiveRunRecord(runID)
+			},
+			RegisterCancel: func(runID string, cancel func(string)) {
+				e.registerActiveRunCancel(runID, cancel)
 			},
 		})
 		finishedAt = time.Now()
@@ -535,12 +575,9 @@ func (e *Engine) executeReservedRun(reserved *reservedTaskRun, trigger string) *
 		delete(e.activeRuns, taskID)
 	}
 	if e.taskGenerationMatchesLocked(taskID, reserved.generation) {
-		history := e.runHistory[taskID]
-		history = append([]models.RunRecord{cloneRunRecord(*record)}, history...)
-		if len(history) > e.maxRunsPerTask {
-			history = history[:e.maxRunsPerTask]
-		}
-		e.runHistory[taskID] = history
+		e.applyRunOutputRetentionLocked(record)
+		e.runHistory[taskID] = append([]models.RunRecord{cloneRunRecord(*record)}, e.runHistory[taskID]...)
+		e.applyRunRetentionLocked()
 		shouldKeepRun = true
 	} else {
 		shouldKeepRun = false
@@ -658,6 +695,15 @@ func (e *Engine) recordActiveRun(info models.ActiveRunInfo, generation int64) {
 		logRunCleanup("Stale active run cleanup", info.RunID, cleanup)
 		return
 	}
+	if e.activeRunControllers == nil {
+		e.activeRunControllers = make(map[string]*activeRunController)
+	}
+	controller := e.activeRunControllers[info.RunID]
+	if controller == nil {
+		controller = &activeRunController{}
+		e.activeRunControllers[info.RunID] = controller
+	}
+	applyActiveRunController(&info, controller, time.Now())
 	e.activeRunDetails[info.RunID] = info
 	e.mu.Unlock()
 	if err := e.PersistState(); err != nil {
@@ -668,10 +714,61 @@ func (e *Engine) recordActiveRun(info models.ActiveRunInfo, generation int64) {
 func (e *Engine) clearActiveRunRecord(runID string) {
 	e.mu.Lock()
 	delete(e.activeRunDetails, runID)
+	delete(e.activeRunControllers, runID)
 	e.mu.Unlock()
 	if err := e.PersistState(); err != nil {
 		log.Printf("[CronPlus] Warning: failed to clear active run metadata: %v", err)
 	}
+}
+
+func (e *Engine) registerActiveRunCancel(runID string, cancel func(string)) {
+	e.mu.Lock()
+	if e.activeRunControllers == nil {
+		e.activeRunControllers = make(map[string]*activeRunController)
+	}
+	controller := e.activeRunControllers[runID]
+	if controller == nil {
+		controller = &activeRunController{}
+		e.activeRunControllers[runID] = controller
+	}
+	controller.cancel = cancel
+	cancelRequested := controller.cancelRequested
+	cancelReason := controller.cancelReason
+	if info, ok := e.activeRunDetails[runID]; ok {
+		applyActiveRunController(&info, controller, time.Now())
+		e.activeRunDetails[runID] = info
+	}
+	e.mu.Unlock()
+
+	if cancelRequested && cancel != nil {
+		cancel(cancelReason)
+	}
+}
+
+func (e *Engine) recordActiveRunOutput(runID, stream, chunk string) {
+	if chunk == "" {
+		return
+	}
+	e.mu.Lock()
+	controller := e.activeRunControllers[runID]
+	if controller == nil {
+		controller = &activeRunController{}
+		if e.activeRunControllers == nil {
+			e.activeRunControllers = make(map[string]*activeRunController)
+		}
+		e.activeRunControllers[runID] = controller
+	}
+	switch stream {
+	case "stderr":
+		controller.stderrTail = appendTail(controller.stderrTail, chunk, activeRunTailLimit)
+	default:
+		controller.stdoutTail = appendTail(controller.stdoutTail, chunk, activeRunTailLimit)
+	}
+	if info, ok := e.activeRunDetails[runID]; ok {
+		applyActiveRunController(&info, controller, time.Now())
+		e.activeRunDetails[runID] = info
+	}
+	e.mu.Unlock()
 }
 
 func (e *Engine) cleanupPersistedActiveRuns(activeRuns []models.ActiveRunInfo) {
@@ -1003,6 +1100,178 @@ func (e *Engine) notifyDeliveryProfilesChanged() {
 	if e.OnDeliveryProfilesChanged != nil {
 		e.OnDeliveryProfilesChanged()
 	}
+}
+
+func (e *Engine) applySettingsLocked(settings store.Settings) {
+	if settings.WebServerPort <= 0 {
+		settings.WebServerPort = 9876
+	}
+	if settings.WebServerBind == "" {
+		settings.WebServerBind = "127.0.0.1"
+	}
+	settings.MaxRunsPerTask = clampNonNegative(settings.MaxRunsPerTask)
+	settings.MaxRunAgeDays = clampNonNegative(settings.MaxRunAgeDays)
+	settings.MaxRunOutputKB = clampNonNegative(settings.MaxRunOutputKB)
+	e.settings = settings
+	if settings.MaxRunsPerTask > 0 {
+		e.maxRunsPerTask = settings.MaxRunsPerTask
+	} else {
+		e.maxRunsPerTask = defaultMaxRunsPerTask
+	}
+}
+
+func (e *Engine) retentionPolicyLocked() models.RetentionPolicy {
+	maxRuns := e.settings.MaxRunsPerTask
+	if maxRuns <= 0 {
+		maxRuns = defaultMaxRunsPerTask
+	}
+	return models.RetentionPolicy{
+		MaxRunsPerTask:        maxRuns,
+		MaxRunAgeDays:         clampNonNegative(e.settings.MaxRunAgeDays),
+		MaxRunOutputKB:        clampNonNegative(e.settings.MaxRunOutputKB),
+		AgePruningEnabled:     e.settings.MaxRunAgeDays > 0,
+		OutputPruningEnabled:  e.settings.MaxRunOutputKB > 0,
+		DefaultMaxRunsPerTask: defaultMaxRunsPerTask,
+	}
+}
+
+func (e *Engine) applyRunRetentionLocked() models.RetentionCleanupReport {
+	policy := e.retentionPolicyLocked()
+	report := models.RetentionCleanupReport{
+		Policy:            policy,
+		RunsBefore:        countRunHistoryLocked(e.runHistory),
+		OutputBytesBefore: runHistoryOutputBytesLocked(e.runHistory),
+	}
+	cutoff := time.Time{}
+	if policy.MaxRunAgeDays > 0 {
+		cutoff = time.Now().Add(-time.Duration(policy.MaxRunAgeDays) * 24 * time.Hour)
+	}
+	for taskID, history := range e.runHistory {
+		originalLen := len(history)
+		taskOutputBytesBefore := runRecordsOutputBytes(history)
+		kept := make([]models.RunRecord, 0, len(history))
+		for _, run := range history {
+			if !cutoff.IsZero() && !run.FinishedAt.IsZero() && run.FinishedAt.Before(cutoff) {
+				continue
+			}
+			e.applyRunOutputRetentionLocked(&run)
+			kept = append(kept, run)
+			if policy.MaxRunsPerTask > 0 && len(kept) >= policy.MaxRunsPerTask {
+				break
+			}
+		}
+		if len(kept) == 0 {
+			delete(e.runHistory, taskID)
+		} else {
+			e.runHistory[taskID] = kept
+		}
+		if len(kept) != originalLen || runRecordsOutputBytes(kept) != taskOutputBytesBefore {
+			report.TasksAffected++
+		}
+	}
+	report.RunsAfter = countRunHistoryLocked(e.runHistory)
+	report.RunsDeleted = report.RunsBefore - report.RunsAfter
+	report.OutputBytesAfter = runHistoryOutputBytesLocked(e.runHistory)
+	report.OutputBytesPruned = report.OutputBytesBefore - report.OutputBytesAfter
+	if report.OutputBytesPruned < 0 {
+		report.OutputBytesPruned = 0
+	}
+	return report
+}
+
+func (e *Engine) applyRunOutputRetentionLocked(run *models.RunRecord) {
+	policy := e.retentionPolicyLocked()
+	if run == nil || policy.MaxRunOutputKB <= 0 {
+		return
+	}
+	limit := policy.MaxRunOutputKB * 1024
+	stdout, pruned := pruneTextToTail(run.Outcome.Stdout, limit)
+	if pruned > 0 {
+		run.Outcome.Stdout = stdout
+		run.Outcome.Diagnostics.StdoutRetentionPruned = true
+		run.Outcome.Diagnostics.OutputBytesPruned += int64(pruned)
+	}
+	stderr, pruned := pruneTextToTail(run.Outcome.Stderr, limit)
+	if pruned > 0 {
+		run.Outcome.Stderr = stderr
+		run.Outcome.Diagnostics.StderrRetentionPruned = true
+		run.Outcome.Diagnostics.OutputBytesPruned += int64(pruned)
+	}
+}
+
+func applyActiveRunController(info *models.ActiveRunInfo, controller *activeRunController, now time.Time) {
+	if info == nil {
+		return
+	}
+	info.ElapsedMs = elapsedMs(info.StartedAt, now)
+	if controller == nil {
+		return
+	}
+	info.CancelRequested = controller.cancelRequested
+	info.CancelReason = controller.cancelReason
+	info.CancelRequestedAt = controller.cancelRequestedAt
+	info.StdoutTail = controller.stdoutTail
+	info.StderrTail = controller.stderrTail
+}
+
+func elapsedMs(startedAt, now time.Time) int64 {
+	if startedAt.IsZero() {
+		return 0
+	}
+	if now.Before(startedAt) {
+		return 0
+	}
+	return now.Sub(startedAt).Milliseconds()
+}
+
+func appendTail(existing, chunk string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	combined := existing + chunk
+	if len(combined) <= limit {
+		return combined
+	}
+	return combined[len(combined)-limit:]
+}
+
+func pruneTextToTail(value string, limit int) (string, int) {
+	if limit <= 0 || len(value) <= limit {
+		return value, 0
+	}
+	pruned := len(value) - limit
+	return value[pruned:], pruned
+}
+
+func countRunHistoryLocked(history map[string][]models.RunRecord) int {
+	total := 0
+	for _, runs := range history {
+		total += len(runs)
+	}
+	return total
+}
+
+func runHistoryOutputBytesLocked(history map[string][]models.RunRecord) int64 {
+	var total int64
+	for _, runs := range history {
+		total += runRecordsOutputBytes(runs)
+	}
+	return total
+}
+
+func runRecordsOutputBytes(runs []models.RunRecord) int64 {
+	var total int64
+	for _, run := range runs {
+		total += int64(len(run.Outcome.Stdout) + len(run.Outcome.Stderr))
+	}
+	return total
+}
+
+func clampNonNegative(value int) int {
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 // NextRunTime returns the next scheduled run time for a task.

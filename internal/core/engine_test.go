@@ -250,6 +250,94 @@ schedule:
 	}
 }
 
+func TestCancelRunRecordsCanceledHistory(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := writeTaskPackage(t, "import time\nprint('started', flush=True)\ntime.sleep(10)\n", python)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+
+	runDone := make(chan error, 1)
+	go func() {
+		_, err := engine.RunTask(task.ID, "manual")
+		runDone <- err
+	}()
+	info := waitForActiveRunInfo(t, engine, task.ID)
+	if info.StdoutTail == "" {
+		t.Fatalf("active run stdout tail = %q, want live output", info.StdoutTail)
+	}
+	if _, err := engine.CancelRun(info.RunID, "test cancellation"); err != nil {
+		t.Fatalf("CancelRun: %v", err)
+	}
+	select {
+	case err := <-runDone:
+		if err != nil {
+			t.Fatalf("RunTask: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("task still running after cancellation")
+	}
+
+	history := engine.RunHistory(task.ID)
+	if len(history) != 1 {
+		t.Fatalf("history len = %d, want 1", len(history))
+	}
+	run := history[0]
+	if !run.Outcome.Diagnostics.Canceled || !strings.Contains(run.Outcome.Diagnostics.CancelReason, "test cancellation") {
+		t.Fatalf("diagnostics = %+v, want canceled reason", run.Outcome.Diagnostics)
+	}
+	if run.Outcome.ExitCode != 130 {
+		t.Fatalf("exit code = %d, want 130", run.Outcome.ExitCode)
+	}
+	diagnosis := DiagnoseRun(task, &run)
+	if diagnosis.Category != "run_canceled" {
+		t.Fatalf("diagnosis = %+v, want run_canceled", diagnosis)
+	}
+	if len(engine.ActiveRuns()) != 0 {
+		t.Fatalf("active runs = %+v, want none", engine.ActiveRuns())
+	}
+}
+
+func TestRunRetentionPrunesCountAndOutput(t *testing.T) {
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	taskID := "task-1"
+	now := time.Now()
+	engine.runHistory[taskID] = []models.RunRecord{
+		{ID: "new", TaskID: taskID, StartedAt: now, FinishedAt: now, Outcome: models.RunOutcome{Stdout: strings.Repeat("n", 20), Stderr: strings.Repeat("e", 20)}},
+		{ID: "old", TaskID: taskID, StartedAt: now.Add(-time.Minute), FinishedAt: now.Add(-time.Minute), Outcome: models.RunOutcome{Stdout: strings.Repeat("o", 20), Stderr: strings.Repeat("r", 20)}},
+	}
+
+	report := engine.UpdateRetentionPolicy(1, 0, 1)
+	if report.RunsDeleted != 1 {
+		t.Fatalf("report = %+v, want one deleted run", report)
+	}
+	history := engine.RunHistory(taskID)
+	if len(history) != 1 || history[0].ID != "new" {
+		t.Fatalf("history = %+v, want newest run only", history)
+	}
+
+	report = engine.UpdateRetentionPolicy(1, 0, 0)
+	if report.Policy.OutputPruningEnabled {
+		t.Fatalf("report policy = %+v, want output pruning disabled", report.Policy)
+	}
+	engine.runHistory[taskID] = []models.RunRecord{
+		{ID: "wide", TaskID: taskID, StartedAt: now, FinishedAt: now, Outcome: models.RunOutcome{Stdout: strings.Repeat("x", 2048), Stderr: strings.Repeat("y", 2048)}},
+	}
+	report = engine.UpdateRetentionPolicy(5, 0, 1)
+	if report.OutputBytesPruned == 0 {
+		t.Fatalf("report = %+v, want output pruning", report)
+	}
+	history = engine.RunHistory(taskID)
+	if len(history) != 1 || len(history[0].Outcome.Stdout) != 1024 || !history[0].Outcome.Diagnostics.StdoutRetentionPruned {
+		t.Fatalf("history = %+v, want stdout pruned to 1KB", history)
+	}
+}
+
 func TestEnvironmentSetupSerializesAndSkipsStaleQueuedReload(t *testing.T) {
 	dir := writeManagedVenvTaskPackage(t)
 	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
@@ -924,6 +1012,21 @@ func waitForActiveRunDetail(t *testing.T, engine *Engine, taskID string) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("active run detail was not recorded before deadline")
+}
+
+func waitForActiveRunInfo(t *testing.T, engine *Engine, taskID string) models.ActiveRunInfo {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, info := range engine.ActiveRuns() {
+			if info.TaskID == taskID && info.StdoutTail != "" {
+				return info
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("active run info with output was not recorded before deadline")
+	return models.ActiveRunInfo{}
 }
 
 func waitForEnvironmentState(t *testing.T, engine *Engine, taskID, wantState string, timeout time.Duration) {

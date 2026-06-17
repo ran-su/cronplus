@@ -245,6 +245,63 @@ func (s *Server) listTools() map[string]any {
 			Annotations:  readOnlyAnnotations(),
 		},
 		{
+			Name:         "cronplus.runs.active",
+			Title:        "List Active Runs",
+			Description:  "Read currently active runs with PID, elapsed time, execution paths, run directory, and live stdout/stderr tails.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.runs.active_get",
+			Title:       "Get Active Run",
+			Description: "Read one currently active run by run ID with PID, elapsed time, execution paths, run directory, and live stdout/stderr tails.",
+			InputSchema: objectSchema(map[string]any{
+				"run_id": stringProperty("CronPlus active run ID."),
+			}, "run_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.runs.cancel",
+			Title:       "Cancel Run",
+			Description: "Request cancellation of a currently active run by run ID. The daemon records a canceled run with cleanup diagnostics when the runner exits.",
+			InputSchema: objectSchema(map[string]any{
+				"run_id": stringProperty("CronPlus active run ID."),
+				"reason": stringProperty("Optional cancellation reason recorded in diagnostics."),
+			}, "run_id"),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+		},
+		{
+			Name:         "cronplus.retention.get",
+			Title:        "Get Retention Policy",
+			Description:  "Read run-history retention settings: max runs per task, max run age, and max retained stdout/stderr bytes per stream.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  readOnlyAnnotations(),
+		},
+		{
+			Name:        "cronplus.retention.update",
+			Title:       "Update Retention Policy",
+			Description: "Update run-history retention settings and immediately prune history to match the new policy.",
+			InputSchema: objectSchema(map[string]any{
+				"max_runs_per_task": map[string]any{"type": "integer", "minimum": 0, "description": "Maximum completed runs kept per task. Zero uses the daemon default."},
+				"max_run_age_days":  map[string]any{"type": "integer", "minimum": 0, "description": "Maximum run age in days. Zero disables age pruning."},
+				"max_run_output_kb": map[string]any{"type": "integer", "minimum": 0, "description": "Maximum retained stdout and stderr KB per stream. Zero disables output pruning."},
+			}),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+		},
+		{
+			Name:         "cronplus.retention.cleanup",
+			Title:        "Run Retention Cleanup",
+			Description:  "Apply the current run-history retention policy immediately and return cleanup counts.",
+			InputSchema:  emptyObjectSchema(),
+			OutputSchema: objectOutputSchema(),
+			Annotations:  map[string]any{"readOnlyHint": false, "destructiveHint": true, "idempotentHint": true, "openWorldHint": false},
+		},
+		{
 			Name:        "cronplus.deliveries.test",
 			Title:       "Test Delivery",
 			Description: "Send a test message through an existing delivery profile. Delivery profile secrets are not exposed through MCP.",
@@ -599,6 +656,57 @@ func (s *Server) callTool(params json.RawMessage) (any, *rpcError) {
 			return nil, err
 		}
 		return s.waitForRun(args.TaskID, args.RunID, args.TimeoutMs), nil
+	case "cronplus.runs.active":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/runs/active")
+		}), nil
+	case "cronplus.runs.active_get":
+		var args struct {
+			RunID string `json:"run_id"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.RunID) == "" {
+			return nil, invalidParams("run_id is required")
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/runs/active/" + pathID(args.RunID))
+		}), nil
+	case "cronplus.runs.cancel":
+		var args struct {
+			RunID  string `json:"run_id"`
+			Reason string `json:"reason"`
+		}
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		if strings.TrimSpace(args.RunID) == "" {
+			return nil, invalidParams("run_id is required")
+		}
+		body := map[string]string{}
+		if strings.TrimSpace(args.Reason) != "" {
+			body["reason"] = strings.TrimSpace(args.Reason)
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/runs/active/"+pathID(args.RunID)+"/cancel", body)
+		}), nil
+	case "cronplus.retention.get":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Get("/api/retention")
+		}), nil
+	case "cronplus.retention.update":
+		var args retentionUpdateArgs
+		if err := bindArgs(call.Arguments, &args); err != nil {
+			return nil, err
+		}
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Put("/api/retention", retentionUpdateBody(args))
+		}), nil
+	case "cronplus.retention.cleanup":
+		return s.daemonTool(func(c *daemonclient.Client) (any, error) {
+			return c.Post("/api/retention/cleanup", nil)
+		}), nil
 	case "cronplus.deliveries.test":
 		var args struct {
 			ProfileID string `json:"profile_id"`
@@ -718,6 +826,12 @@ type runListArgs struct {
 	Limit          int    `json:"limit"`
 }
 
+type retentionUpdateArgs struct {
+	MaxRunsPerTask *int `json:"max_runs_per_task"`
+	MaxRunAgeDays  *int `json:"max_run_age_days"`
+	MaxRunOutputKB *int `json:"max_run_output_kb"`
+}
+
 type schedulePreviewArgs struct {
 	TaskID     string `json:"task_id"`
 	Expression string `json:"expression"`
@@ -770,6 +884,20 @@ func runListPath(args runListArgs) string {
 		path += "?" + encoded
 	}
 	return path
+}
+
+func retentionUpdateBody(args retentionUpdateArgs) map[string]any {
+	body := map[string]any{}
+	if args.MaxRunsPerTask != nil {
+		body["maxRunsPerTask"] = *args.MaxRunsPerTask
+	}
+	if args.MaxRunAgeDays != nil {
+		body["maxRunAgeDays"] = *args.MaxRunAgeDays
+	}
+	if args.MaxRunOutputKB != nil {
+		body["maxRunOutputKB"] = *args.MaxRunOutputKB
+	}
+	return body
 }
 
 func schedulePreviewBody(args schedulePreviewArgs) map[string]any {
@@ -964,6 +1092,17 @@ func (s *Server) getRunOrRunning(taskID, runID string) (any, error) {
 	}
 	if daemonErr, ok := err.(*daemonclient.Error); !ok || daemonErr.Code != "run_not_found" {
 		return nil, err
+	}
+	active, activeErr := client.Get("/api/runs/active/" + pathID(runID))
+	if activeErr == nil {
+		if activeMap, ok := active.(map[string]any); ok {
+			activeMap["status"] = "running"
+			if stringField(activeMap, "taskID") == "" {
+				activeMap["taskID"] = taskID
+			}
+			return activeMap, nil
+		}
+		return active, nil
 	}
 	task, taskErr := client.Get("/api/tasks/" + pathID(taskID))
 	if taskErr != nil {

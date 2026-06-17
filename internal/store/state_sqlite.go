@@ -94,6 +94,62 @@ func ensureSQLiteSchema(db *sql.DB) error {
 			return err
 		}
 	}
+	return ensureSQLiteActiveRunColumns(db)
+}
+
+func ensureSQLiteActiveRunColumns(db *sql.DB) error {
+	rows, err := db.Query(`PRAGMA table_info(active_runs)`)
+	if err != nil {
+		return fmt.Errorf("failed to inspect active run schema: %w", err)
+	}
+	existing := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("failed to scan active run schema: %w", err)
+		}
+		existing[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("failed to inspect active run schema: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return fmt.Errorf("failed to close active run schema inspection: %w", err)
+	}
+
+	columns := []struct {
+		name       string
+		columnType string
+	}{
+		{"task_name", "TEXT"},
+		{"task_slug", "TEXT"},
+		{"trigger", "TEXT"},
+		{"python_executable", "TEXT"},
+		{"script_path", "TEXT"},
+		{"working_directory", "TEXT"},
+		{"environment_strategy", "TEXT"},
+		{"timeout_seconds", "INTEGER"},
+		{"max_output_kb", "INTEGER"},
+		{"cancel_requested", "INTEGER"},
+		{"cancel_reason", "TEXT"},
+		{"cancel_requested_at", "TEXT"},
+		{"stdout_tail", "TEXT"},
+		{"stderr_tail", "TEXT"},
+	}
+	for _, column := range columns {
+		if existing[column.name] {
+			continue
+		}
+		if _, err := db.Exec(fmt.Sprintf(`ALTER TABLE active_runs ADD COLUMN %s %s`, column.name, column.columnType)); err != nil {
+			return fmt.Errorf("failed to add active run column %s: %w", column.name, err)
+		}
+	}
 	return nil
 }
 
@@ -160,10 +216,24 @@ func createSQLiteSchema(db *sql.DB) error {
 		`CREATE TABLE IF NOT EXISTS active_runs (
 			run_id TEXT PRIMARY KEY,
 			task_id TEXT NOT NULL,
+			task_name TEXT,
+			task_slug TEXT,
+			trigger TEXT,
 			root_pid INTEGER,
 			process_group_id INTEGER,
 			run_directory TEXT,
-			started_at TEXT NOT NULL
+			python_executable TEXT,
+			script_path TEXT,
+			working_directory TEXT,
+			environment_strategy TEXT,
+			timeout_seconds INTEGER,
+			max_output_kb INTEGER,
+			started_at TEXT NOT NULL,
+			cancel_requested INTEGER,
+			cancel_reason TEXT,
+			cancel_requested_at TEXT,
+			stdout_tail TEXT,
+			stderr_tail TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS command_log (
 			id TEXT PRIMARY KEY,
@@ -248,6 +318,18 @@ func readSQLiteSettings(db *sql.DB, settings *Settings) error {
 			}
 		case "webServerBind":
 			settings.WebServerBind = value
+		case "maxRunsPerTask":
+			if n, err := strconv.Atoi(value); err == nil {
+				settings.MaxRunsPerTask = n
+			}
+		case "maxRunAgeDays":
+			if n, err := strconv.Atoi(value); err == nil {
+				settings.MaxRunAgeDays = n
+			}
+		case "maxRunOutputKB":
+			if n, err := strconv.Atoi(value); err == nil {
+				settings.MaxRunOutputKB = n
+			}
 		}
 	}
 	return rows.Err()
@@ -384,7 +466,7 @@ func readSQLiteDeliveryResults(db *sql.DB) (map[string][]models.DeliveryResult, 
 }
 
 func readSQLiteActiveRuns(db *sql.DB) ([]models.ActiveRunInfo, error) {
-	rows, err := db.Query(`SELECT task_id, run_id, root_pid, process_group_id, run_directory, started_at FROM active_runs ORDER BY started_at`)
+	rows, err := db.Query(`SELECT task_id, run_id, task_name, task_slug, trigger, root_pid, process_group_id, run_directory, python_executable, script_path, working_directory, environment_strategy, timeout_seconds, max_output_kb, started_at, cancel_requested, cancel_reason, cancel_requested_at, stdout_tail, stderr_tail FROM active_runs ORDER BY started_at`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read active runs: %w", err)
 	}
@@ -393,10 +475,30 @@ func readSQLiteActiveRuns(db *sql.DB) ([]models.ActiveRunInfo, error) {
 	for rows.Next() {
 		var info models.ActiveRunInfo
 		var startedAt string
-		if err := rows.Scan(&info.TaskID, &info.RunID, &info.RootPID, &info.ProcessGroupID, &info.RunDirectory, &startedAt); err != nil {
+		var taskName, taskSlug, trigger, runDirectory, pythonExecutable, scriptPath, workingDirectory, environmentStrategy, cancelReason, cancelRequestedAt, stdoutTail, stderrTail sql.NullString
+		var timeoutSeconds, maxOutputKB, cancelRequested sql.NullInt64
+		if err := rows.Scan(&info.TaskID, &info.RunID, &taskName, &taskSlug, &trigger, &info.RootPID, &info.ProcessGroupID, &runDirectory, &pythonExecutable, &scriptPath, &workingDirectory, &environmentStrategy, &timeoutSeconds, &maxOutputKB, &startedAt, &cancelRequested, &cancelReason, &cancelRequestedAt, &stdoutTail, &stderrTail); err != nil {
 			return nil, fmt.Errorf("failed to scan active run: %w", err)
 		}
+		info.TaskName = taskName.String
+		info.TaskSlug = taskSlug.String
+		info.Trigger = trigger.String
+		info.RunDirectory = runDirectory.String
+		info.PythonExecutable = pythonExecutable.String
+		info.ScriptPath = scriptPath.String
+		info.WorkingDirectory = workingDirectory.String
+		info.EnvironmentStrategy = environmentStrategy.String
+		info.TimeoutSeconds = int(timeoutSeconds.Int64)
+		info.MaxOutputKB = int(maxOutputKB.Int64)
 		info.StartedAt = parseSQLiteTime(startedAt)
+		info.CancelRequested = cancelRequested.Int64 != 0
+		info.CancelReason = cancelReason.String
+		if cancelRequestedAt.String != "" {
+			t := parseSQLiteTime(cancelRequestedAt.String)
+			info.CancelRequestedAt = &t
+		}
+		info.StdoutTail = stdoutTail.String
+		info.StderrTail = stderrTail.String
 		activeRuns = append(activeRuns, info)
 	}
 	return activeRuns, rows.Err()
@@ -447,7 +549,17 @@ func writeSQLiteState(db *sql.DB, state *State) error {
 		}
 	}
 
-	if _, err := tx.Exec(`INSERT INTO settings(key, value) VALUES('webServerPort', ?), ('webServerBind', ?)`, strconv.Itoa(state.Settings.WebServerPort), state.Settings.WebServerBind); err != nil {
+	if _, err := tx.Exec(`INSERT INTO settings(key, value) VALUES
+		('webServerPort', ?),
+		('webServerBind', ?),
+		('maxRunsPerTask', ?),
+		('maxRunAgeDays', ?),
+		('maxRunOutputKB', ?)`,
+		strconv.Itoa(state.Settings.WebServerPort),
+		state.Settings.WebServerBind,
+		strconv.Itoa(state.Settings.MaxRunsPerTask),
+		strconv.Itoa(state.Settings.MaxRunAgeDays),
+		strconv.Itoa(state.Settings.MaxRunOutputKB)); err != nil {
 		return fmt.Errorf("failed to write settings: %w", err)
 	}
 	if err := writeSQLiteTasks(tx, state.Tasks); err != nil {
@@ -550,13 +662,17 @@ func writeSQLiteRunHistory(tx *sql.Tx, runHistory map[string][]models.RunRecord)
 }
 
 func writeSQLiteActiveRuns(tx *sql.Tx, activeRuns []models.ActiveRunInfo) error {
-	stmt, err := tx.Prepare(`INSERT INTO active_runs(task_id, run_id, root_pid, process_group_id, run_directory, started_at) VALUES (?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO active_runs(task_id, run_id, task_name, task_slug, trigger, root_pid, process_group_id, run_directory, python_executable, script_path, working_directory, environment_strategy, timeout_seconds, max_output_kb, started_at, cancel_requested, cancel_reason, cancel_requested_at, stdout_tail, stderr_tail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare active run insert: %w", err)
 	}
 	defer stmt.Close()
 	for _, info := range activeRuns {
-		if _, err := stmt.Exec(info.TaskID, info.RunID, info.RootPID, info.ProcessGroupID, info.RunDirectory, formatSQLiteTime(info.StartedAt)); err != nil {
+		cancelRequestedAt := ""
+		if info.CancelRequestedAt != nil {
+			cancelRequestedAt = formatSQLiteTime(*info.CancelRequestedAt)
+		}
+		if _, err := stmt.Exec(info.TaskID, info.RunID, nullString(info.TaskName), nullString(info.TaskSlug), nullString(info.Trigger), info.RootPID, info.ProcessGroupID, nullString(info.RunDirectory), nullString(info.PythonExecutable), nullString(info.ScriptPath), nullString(info.WorkingDirectory), nullString(info.EnvironmentStrategy), info.TimeoutSeconds, info.MaxOutputKB, formatSQLiteTime(info.StartedAt), boolInt(info.CancelRequested), nullString(info.CancelReason), nullString(cancelRequestedAt), nullString(info.StdoutTail), nullString(info.StderrTail)); err != nil {
 			return fmt.Errorf("failed to write active run %s: %w", info.RunID, err)
 		}
 	}

@@ -151,13 +151,83 @@ func (e *Engine) ActiveRuns() []models.ActiveRunInfo {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	activeRuns := make([]models.ActiveRunInfo, 0, len(e.activeRunDetails))
+	now := time.Now()
 	for _, info := range e.activeRunDetails {
+		if controller := e.activeRunControllers[info.RunID]; controller != nil {
+			applyActiveRunController(&info, controller, now)
+		} else {
+			info.ElapsedMs = elapsedMs(info.StartedAt, now)
+		}
 		activeRuns = append(activeRuns, info)
 	}
 	sort.Slice(activeRuns, func(i, j int) bool {
 		return activeRuns[i].StartedAt.Before(activeRuns[j].StartedAt)
 	})
 	return activeRuns
+}
+
+func (e *Engine) ActiveRun(runID string) (*models.ActiveRunInfo, error) {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	info, ok := e.activeRunDetails[runID]
+	if !ok {
+		return nil, fmt.Errorf("%w: %s", ErrRunNotActive, runID)
+	}
+	if controller := e.activeRunControllers[runID]; controller != nil {
+		applyActiveRunController(&info, controller, time.Now())
+	} else {
+		info.ElapsedMs = elapsedMs(info.StartedAt, time.Now())
+	}
+	return &info, nil
+}
+
+func (e *Engine) CancelRun(runID, reason string) (models.ActiveRunInfo, error) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		reason = "Canceled by user request."
+	}
+	e.mu.Lock()
+	info, ok := e.activeRunDetails[runID]
+	if !ok {
+		e.mu.Unlock()
+		return models.ActiveRunInfo{}, fmt.Errorf("%w: %s", ErrRunNotActive, runID)
+	}
+	if e.activeRunControllers == nil {
+		e.activeRunControllers = make(map[string]*activeRunController)
+	}
+	controller := e.activeRunControllers[runID]
+	if controller == nil {
+		controller = &activeRunController{}
+		e.activeRunControllers[runID] = controller
+	}
+	now := time.Now()
+	controller.cancelRequested = true
+	controller.cancelReason = reason
+	controller.cancelRequestedAt = &now
+	applyActiveRunController(&info, controller, now)
+	e.activeRunDetails[runID] = info
+	cancel := controller.cancel
+	e.mu.Unlock()
+
+	if err := e.PersistState(); err != nil {
+		logPersistWarning("failed to persist active run cancellation request", err)
+	}
+
+	if cancel == nil {
+		cleanup := cleanupPersistedRunProcess(info, 5*time.Second)
+		logRunCleanup("Active run cancellation cleanup", info.RunID, cleanup)
+		e.mu.Lock()
+		delete(e.activeRunDetails, runID)
+		delete(e.activeRunControllers, runID)
+		delete(e.activeRuns, info.TaskID)
+		e.mu.Unlock()
+		if err := e.PersistState(); err != nil {
+			logPersistWarning("failed to persist active run cancellation cleanup", err)
+		}
+		return info, nil
+	}
+	cancel(reason)
+	return info, nil
 }
 
 func (e *Engine) taskEnvironmentDetail(task *models.Task) models.TaskEnvironmentDetail {

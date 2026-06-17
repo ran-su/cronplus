@@ -35,6 +35,38 @@ func TestRunStatusFromOutcomeUsesValidParsedStatusOverExitCode(t *testing.T) {
 	}
 }
 
+func TestRunStatusFromOutcomeTreatsCanceledOrTimedOutAsFailure(t *testing.T) {
+	tests := []struct {
+		name    string
+		outcome RunOutcome
+	}{
+		{
+			name: "canceled",
+			outcome: RunOutcome{
+				ExitCode:     0,
+				ParsedResult: &ParsedResult{Status: "success"},
+				Diagnostics:  RunDiagnostics{Canceled: true},
+			},
+		},
+		{
+			name: "timed out",
+			outcome: RunOutcome{
+				ExitCode:     0,
+				ParsedResult: &ParsedResult{Status: "success"},
+				TimedOut:     true,
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status := RunStatusFromOutcome(tt.outcome)
+			if status != "failure" {
+				t.Fatalf("status = %q, want failure", status)
+			}
+		})
+	}
+}
+
 func TestParsedResultJSONPreservesArbitraryFields(t *testing.T) {
 	var result ParsedResult
 	if err := json.Unmarshal([]byte(`{"status":"success","message":"hello","deliverable":{"body":"nested","extra":"kept"}}`), &result); err != nil {

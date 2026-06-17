@@ -163,7 +163,7 @@ func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
 		CommandLog: []models.CommandRecord{
 			{ID: "cmd-1", ChannelType: "telegram", ChatID: "1", CommandText: "/run task-1", MatchedCommand: "/run", ReplyText: "Started", ReceivedAt: startedAt},
 		},
-		Settings: Settings{WebServerPort: 9999, WebServerBind: "127.0.0.1"},
+		Settings: Settings{WebServerPort: 9999, WebServerBind: "127.0.0.1", MaxRunsPerTask: 12, MaxRunAgeDays: 30, MaxRunOutputKB: 128},
 	}
 
 	if err := st.Save(state); err != nil {
@@ -199,8 +199,53 @@ func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
 	if len(got.CommandLog) != 1 || got.CommandLog[0].ID != "cmd-1" {
 		t.Fatalf("command log = %+v", got.CommandLog)
 	}
-	if got.Settings.WebServerPort != 9999 {
+	if got.Settings.WebServerPort != 9999 || got.Settings.MaxRunsPerTask != 12 || got.Settings.MaxRunAgeDays != 30 || got.Settings.MaxRunOutputKB != 128 {
 		t.Fatalf("settings = %+v", got.Settings)
+	}
+}
+
+func TestSQLiteActiveRunColumnMigrationLoadsOldRows(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	st := New(statePath)
+	db, err := st.openSQLiteLocked()
+	if err != nil {
+		t.Fatalf("openSQLiteLocked: %v", err)
+	}
+	if err := createSQLiteSchema(db); err != nil {
+		t.Fatalf("createSQLiteSchema: %v", err)
+	}
+	if _, err := db.Exec(`DROP TABLE active_runs`); err != nil {
+		t.Fatalf("drop active_runs: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE active_runs (
+		run_id TEXT PRIMARY KEY,
+		task_id TEXT NOT NULL,
+		root_pid INTEGER,
+		process_group_id INTEGER,
+		run_directory TEXT,
+		started_at TEXT NOT NULL
+	)`); err != nil {
+		t.Fatalf("create old active_runs: %v", err)
+	}
+	startedAt := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(`INSERT INTO active_runs(task_id, run_id, root_pid, process_group_id, run_directory, started_at) VALUES (?, ?, ?, ?, ?, ?)`,
+		"task-1", "run-1", 123, 123, "/tmp/run", formatSQLiteTime(startedAt)); err != nil {
+		t.Fatalf("insert old active run: %v", err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatalf("close db: %v", err)
+	}
+
+	got, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got.ActiveRuns) != 1 {
+		t.Fatalf("active runs = %+v, want migrated row", got.ActiveRuns)
+	}
+	run := got.ActiveRuns[0]
+	if run.RunID != "run-1" || run.TaskID != "task-1" || run.TimeoutSeconds != 0 || run.CancelRequested {
+		t.Fatalf("active run = %+v, want old row with zero-value new fields", run)
 	}
 }
 

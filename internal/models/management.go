@@ -92,6 +92,7 @@ type HealthReport struct {
 	Runs           HealthRunSummary         `json:"runs"`
 	Environments   HealthEnvironmentSummary `json:"environments"`
 	Storage        HealthStorageSummary     `json:"storage"`
+	Retention      RetentionPolicy          `json:"retention"`
 	ActiveRuns     []ActiveRunInfo          `json:"activeRuns"`
 	AttentionItems []map[string]any         `json:"attentionItems"`
 }
@@ -121,4 +122,24 @@ type HealthStorageSummary struct {
 	ConfigDir    DirectoryUsage `json:"configDir"`
 	TaskPackages DirectoryUsage `json:"taskPackages"`
 	Environments DirectoryUsage `json:"environments"`
+}
+
+type RetentionPolicy struct {
+	MaxRunsPerTask        int  `json:"maxRunsPerTask"`
+	MaxRunAgeDays         int  `json:"maxRunAgeDays"`
+	MaxRunOutputKB        int  `json:"maxRunOutputKB"`
+	AgePruningEnabled     bool `json:"agePruningEnabled"`
+	OutputPruningEnabled  bool `json:"outputPruningEnabled"`
+	DefaultMaxRunsPerTask int  `json:"defaultMaxRunsPerTask"`
+}
+
+type RetentionCleanupReport struct {
+	Policy            RetentionPolicy `json:"policy"`
+	RunsBefore        int             `json:"runsBefore"`
+	RunsAfter         int             `json:"runsAfter"`
+	RunsDeleted       int             `json:"runsDeleted"`
+	OutputBytesBefore int64           `json:"outputBytesBefore"`
+	OutputBytesAfter  int64           `json:"outputBytesAfter"`
+	OutputBytesPruned int64           `json:"outputBytesPruned"`
+	TasksAffected     int             `json:"tasksAffected"`
 }

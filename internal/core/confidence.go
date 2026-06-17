@@ -39,10 +39,11 @@ type TaskRunCheck struct {
 }
 
 type RunDiagnosis struct {
-	Status  string   `json:"status"`
-	Summary string   `json:"summary"`
-	Causes  []string `json:"causes,omitempty"`
-	Actions []string `json:"actions,omitempty"`
+	Status   string   `json:"status"`
+	Category string   `json:"category,omitempty"`
+	Summary  string   `json:"summary"`
+	Causes   []string `json:"causes,omitempty"`
+	Actions  []string `json:"actions,omitempty"`
 }
 
 func CheckTaskPackage(dirPath string) TaskPackageCheck {
@@ -152,14 +153,27 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 
 	if outcome.TimedOut {
 		diagnosis.Status = "failure"
+		diagnosis.Category = "script_timeout"
 		diagnosis.Summary = fmt.Sprintf("The script timed out after %d seconds.", outcome.Diagnostics.TimeoutSeconds)
 		diagnosis.Causes = append(diagnosis.Causes, "The process did not exit before the configured timeout.")
 		diagnosis.Actions = append(diagnosis.Actions, "Increase runtime.timeout_seconds or make the script finish faster.")
 		return diagnosis
 	}
 
+	if outcome.Diagnostics.Canceled {
+		diagnosis.Status = "failure"
+		diagnosis.Category = "run_canceled"
+		diagnosis.Summary = "The run was canceled before it finished."
+		if outcome.Diagnostics.CancelReason != "" {
+			diagnosis.Causes = append(diagnosis.Causes, outcome.Diagnostics.CancelReason)
+		}
+		diagnosis.Actions = append(diagnosis.Actions, "Review the live output and rerun the task when the underlying issue is resolved.")
+		return diagnosis
+	}
+
 	if expectStructured && !outcome.Diagnostics.StructuredResultFound {
 		diagnosis.Status = "failure"
+		diagnosis.Category = "missing_structured_result"
 		diagnosis.Summary = "The script finished, but did not print the required structured result."
 		diagnosis.Causes = append(diagnosis.Causes, "result_contract.expect_structured_result is enabled.")
 		diagnosis.Actions = append(diagnosis.Actions, "Print a CRONPLUS_RESULT=<json> line before the script exits.")
@@ -172,12 +186,16 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 		} else {
 			diagnosis.Summary = fmt.Sprintf("The script reported %s.", status)
 		}
+		if diagnosis.Category == "" && dependencyGateDetected(outcome.ParsedResult.Data) {
+			diagnosis.Category = "dependency_unhealthy"
+		}
 		if status == "failure" {
 			diagnosis.Actions = append(diagnosis.Actions, "Review the structured result and script logs for the reported failure.")
 		}
 	} else {
 		if outcome.ExitCode != 0 {
 			diagnosis.Status = "failure"
+			diagnosis.Category = "script_launch_failed"
 			diagnosis.Summary = fmt.Sprintf("The script exited with code %d.", outcome.ExitCode)
 			if tail := firstUsefulLine(outcome.Stderr); tail != "" {
 				diagnosis.Causes = append(diagnosis.Causes, tail)
@@ -196,8 +214,27 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 		if diagnosis.Status == "success" {
 			diagnosis.Status = "warning"
 		}
+		if diagnosis.Category == "" {
+			diagnosis.Category = "output_cap_reached"
+		}
 		diagnosis.Causes = append(diagnosis.Causes, fmt.Sprintf("Output exceeded the cap; %d bytes were discarded.", outcome.Diagnostics.OutputBytesDiscarded))
 		diagnosis.Actions = append(diagnosis.Actions, "Reduce script output or increase runtime.max_output_kb.")
+	}
+	if outcome.Diagnostics.OutputBytesPruned > 0 {
+		if diagnosis.Category == "" {
+			diagnosis.Category = "retention_pruned_output"
+		}
+		diagnosis.Causes = append(diagnosis.Causes, fmt.Sprintf("Run output was pruned by retention settings; %d bytes were removed from stored history.", outcome.Diagnostics.OutputBytesPruned))
+	}
+	if cleanupIncomplete(outcome.Diagnostics.Cleanup) {
+		diagnosis.Category = "cleanup_incomplete"
+		if outcome.Diagnostics.Cleanup.OrphanScanError != "" {
+			diagnosis.Causes = append(diagnosis.Causes, "Orphan process scan failed: "+outcome.Diagnostics.Cleanup.OrphanScanError)
+		}
+		if outcome.Diagnostics.Cleanup.RunDirectoryCleanupError != "" {
+			diagnosis.Causes = append(diagnosis.Causes, "Run directory cleanup failed: "+outcome.Diagnostics.Cleanup.RunDirectoryCleanupError)
+		}
+		diagnosis.Actions = append(diagnosis.Actions, "Inspect the run directory and process cleanup diagnostics.")
 	}
 
 	failedDeliveries := 0
@@ -217,6 +254,9 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 		if diagnosis.Status == "success" {
 			diagnosis.Status = "warning"
 		}
+		if diagnosis.Category == "" {
+			diagnosis.Category = deliveryFailureCategory(deliveryResults)
+		}
 		if diagnosis.Summary == "" || diagnosis.Summary == "The script completed successfully." {
 			diagnosis.Summary = "The script finished, but delivery failed."
 		}
@@ -229,6 +269,30 @@ func DiagnoseOutcome(outcome models.RunOutcome, deliveryResults []models.Deliver
 		diagnosis.Summary = fmt.Sprintf("The run finished with status %s.", diagnosis.Status)
 	}
 	return diagnosis
+}
+
+func dependencyGateDetected(data any) bool {
+	dataMap, ok := data.(map[string]any)
+	if !ok {
+		return false
+	}
+	_, hasDependencyIndex := dataMap["dependencyIndex"]
+	_, hasOnUnhealthy := dataMap["onUnhealthy"]
+	return hasDependencyIndex || hasOnUnhealthy
+}
+
+func cleanupIncomplete(cleanup models.RunCleanupDiagnostics) bool {
+	return cleanup.OrphanScanError != "" || cleanup.RunDirectoryCleanupError != ""
+}
+
+func deliveryFailureCategory(results []models.DeliveryResult) string {
+	for _, result := range results {
+		errText := strings.ToLower(result.Error)
+		if strings.Contains(errText, "template") || strings.Contains(errText, "render") {
+			return "delivery_template_error"
+		}
+	}
+	return "delivery_transport_error"
 }
 
 func NextRunTimesForManifest(m *models.ScriptManifest, count int, after time.Time) []time.Time {

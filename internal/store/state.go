@@ -33,8 +33,11 @@ type PersistedTask struct {
 
 // Settings contains daemon-level configuration.
 type Settings struct {
-	WebServerPort int    `json:"webServerPort"`
-	WebServerBind string `json:"webServerBind"`
+	WebServerPort  int    `json:"webServerPort"`
+	WebServerBind  string `json:"webServerBind"`
+	MaxRunsPerTask int    `json:"maxRunsPerTask,omitempty"`
+	MaxRunAgeDays  int    `json:"maxRunAgeDays,omitempty"`
+	MaxRunOutputKB int    `json:"maxRunOutputKB,omitempty"`
 }
 
 // Store manages SQLite persistence of app state, with a one-time import path
@@ -136,6 +139,15 @@ func normalizeState(state *State) {
 	}
 	if state.Settings.WebServerBind == "" {
 		state.Settings.WebServerBind = "127.0.0.1"
+	}
+	if state.Settings.MaxRunsPerTask < 0 {
+		state.Settings.MaxRunsPerTask = 0
+	}
+	if state.Settings.MaxRunAgeDays < 0 {
+		state.Settings.MaxRunAgeDays = 0
+	}
+	if state.Settings.MaxRunOutputKB < 0 {
+		state.Settings.MaxRunOutputKB = 0
 	}
 }
 

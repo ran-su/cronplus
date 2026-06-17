@@ -36,7 +36,13 @@ type RunDiagnostics struct {
 	StdoutTruncated       bool                  `json:"stdoutTruncated"`
 	StderrTruncated       bool                  `json:"stderrTruncated"`
 	OutputBytesDiscarded  int64                 `json:"outputBytesDiscarded"`
+	StdoutRetentionPruned bool                  `json:"stdoutRetentionPruned,omitempty"`
+	StderrRetentionPruned bool                  `json:"stderrRetentionPruned,omitempty"`
+	OutputBytesPruned     int64                 `json:"outputBytesPruned,omitempty"`
 	LimitMode             string                `json:"limitMode,omitempty"`
+	Canceled              bool                  `json:"canceled,omitempty"`
+	CancelReason          string                `json:"cancelReason,omitempty"`
+	CancelRequestedAt     *time.Time            `json:"cancelRequestedAt,omitempty"`
 	Cleanup               RunCleanupDiagnostics `json:"cleanup"`
 }
 
@@ -50,12 +56,27 @@ type RunCleanupDiagnostics struct {
 }
 
 type ActiveRunInfo struct {
-	TaskID         string    `json:"taskID"`
-	RunID          string    `json:"runID"`
-	RootPID        int       `json:"rootPID"`
-	ProcessGroupID int       `json:"processGroupID"`
-	RunDirectory   string    `json:"runDirectory"`
-	StartedAt      time.Time `json:"startedAt"`
+	TaskID              string     `json:"taskID"`
+	TaskName            string     `json:"taskName,omitempty"`
+	TaskSlug            string     `json:"taskSlug,omitempty"`
+	RunID               string     `json:"runID"`
+	Trigger             string     `json:"trigger,omitempty"`
+	RootPID             int        `json:"rootPID"`
+	ProcessGroupID      int        `json:"processGroupID"`
+	RunDirectory        string     `json:"runDirectory"`
+	PythonExecutable    string     `json:"pythonExecutable,omitempty"`
+	ScriptPath          string     `json:"scriptPath,omitempty"`
+	WorkingDirectory    string     `json:"workingDirectory,omitempty"`
+	EnvironmentStrategy string     `json:"environmentStrategy,omitempty"`
+	TimeoutSeconds      int        `json:"timeoutSeconds,omitempty"`
+	MaxOutputKB         int        `json:"maxOutputKB,omitempty"`
+	StartedAt           time.Time  `json:"startedAt"`
+	ElapsedMs           int64      `json:"elapsedMs,omitempty"`
+	CancelRequested     bool       `json:"cancelRequested,omitempty"`
+	CancelReason        string     `json:"cancelReason,omitempty"`
+	CancelRequestedAt   *time.Time `json:"cancelRequestedAt,omitempty"`
+	StdoutTail          string     `json:"stdoutTail,omitempty"`
+	StderrTail          string     `json:"stderrTail,omitempty"`
 }
 
 // ParsedResult is the structured data extracted from CRONPLUS_RESULT=<json>.
@@ -174,6 +195,9 @@ func IsValidRunStatus(status string) bool {
 
 // RunStatusFromOutcome returns the canonical run status for a completed script run.
 func RunStatusFromOutcome(outcome RunOutcome) string {
+	if outcome.TimedOut || outcome.Diagnostics.Canceled {
+		return "failure"
+	}
 	status := "failure"
 	if outcome.ExitCode == 0 {
 		status = "success"

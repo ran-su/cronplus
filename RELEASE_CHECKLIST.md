@@ -38,9 +38,10 @@ Use a small package with `managed_venv`, structured output, and at least one del
 4. Confirm the diagnostic check does not create imported-task run history.
 5. Run **Run Now** and confirm a real run history row appears.
 6. Open the run detail page and confirm status, trigger, duration, stdout/stderr, parsed result, diagnosis, cleanup, and delivery results are readable.
-7. Reload the manifest and confirm task ID and run history are preserved.
-8. Disable and re-enable the task.
-9. Remove the import and confirm the package files remain on disk.
+7. Start a long-running task, confirm it appears on Health with PID/process group, elapsed time, output tail, and run directory, then cancel it and confirm a canceled run record is saved.
+8. Reload the manifest and confirm task ID and run history are preserved.
+9. Disable and re-enable the task.
+10. Remove the import and confirm the package files remain on disk.
 
 ## Dependency Smoke
 
@@ -65,9 +66,10 @@ With the daemon running:
 
 1. Call `/api/status`, `/api/health`, `/api/tasks`, and `/api/tasks/{id}/runs`.
 2. Confirm run history filters work for `status`, `trigger`, `deliveryStatus`, `q`, and `limit`.
-3. Start `cronplus mcp` from an MCP-capable client or local harness.
-4. Confirm MCP tools can read status, list/get tasks, start a run, list/get/wait for runs, inspect dependency health, inspect dependents, inspect environment size, rebuild a managed venv, preview schedules, and manage delivery profiles.
-5. Confirm MCP package/task checks remain diagnostic probes and do not create imported-task run history.
+3. Call `/api/runs/active`, `/api/runs/active/{runId}`, `/api/runs/active/{runId}/cancel`, `/api/retention`, and `/api/retention/cleanup`.
+4. Start `cronplus mcp` from an MCP-capable client or local harness.
+5. Confirm MCP tools can read status, list/get tasks, start a run, list/get/wait for runs, inspect/cancel active runs, inspect/update/cleanup retention, inspect dependency health, inspect dependents, inspect environment size, rebuild a managed venv, preview schedules, and manage delivery profiles.
+6. Confirm MCP package/task checks remain diagnostic probes and do not create imported-task run history.
 
 ## Browser UI Smoke
 
@@ -80,5 +82,6 @@ Open the web UI in a browser and inspect desktop and narrow mobile widths:
 5. Run detail stdout/stderr blocks scroll instead of stretching the layout.
 6. Delivery profile forms and edit/test/delete buttons fit.
 7. Import modal path picker, diagnostic check result, and import actions fit.
-8. Health storage, daemon, active-run, and attention sections are readable.
-9. Settings daemon paths wrap without forcing horizontal page scroll.
+8. Health storage, daemon, active-run, retention, and attention sections are readable.
+9. Active-run cancel controls fit and retention inputs do not overlap at desktop or narrow widths.
+10. Settings daemon paths wrap without forcing horizontal page scroll.

@@ -307,6 +307,137 @@ func TestRunTaskEndpointReturnsRunID(t *testing.T) {
 	}
 }
 
+func TestActiveRunEndpointsAndCancel(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := writeAPITaskPackage(t, "import time\nprint('started', flush=True)\ntime.sleep(10)\n", python, "")
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	startRec := httptest.NewRecorder()
+	startReq := httptest.NewRequest(http.MethodPost, "/api/tasks/"+task.ID+"/run", nil)
+	mux.ServeHTTP(startRec, startReq)
+	if startRec.Code != http.StatusAccepted {
+		t.Fatalf("start status = %d, want %d; body=%s", startRec.Code, http.StatusAccepted, startRec.Body.String())
+	}
+	var start struct {
+		RunID string `json:"runID"`
+	}
+	if err := json.Unmarshal(startRec.Body.Bytes(), &start); err != nil {
+		t.Fatalf("decode start: %v", err)
+	}
+
+	waitForAPIActiveRun(t, engine, start.RunID)
+	listRec := httptest.NewRecorder()
+	listReq := httptest.NewRequest(http.MethodGet, "/api/runs/active", nil)
+	mux.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list status = %d, want %d; body=%s", listRec.Code, http.StatusOK, listRec.Body.String())
+	}
+	var list struct {
+		ActiveRuns []models.ActiveRunInfo `json:"activeRuns"`
+	}
+	if err := json.Unmarshal(listRec.Body.Bytes(), &list); err != nil {
+		t.Fatalf("decode active runs: %v", err)
+	}
+	if len(list.ActiveRuns) != 1 || list.ActiveRuns[0].RunID != start.RunID || list.ActiveRuns[0].StdoutTail == "" {
+		t.Fatalf("active runs = %+v, want live run with output", list.ActiveRuns)
+	}
+
+	invalidCancelRec := httptest.NewRecorder()
+	invalidCancelReq := httptest.NewRequest(http.MethodPost, "/api/runs/active/"+start.RunID+"/cancel", bytes.NewReader([]byte(`{`)))
+	mux.ServeHTTP(invalidCancelRec, invalidCancelReq)
+	if invalidCancelRec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid cancel status = %d, want %d; body=%s", invalidCancelRec.Code, http.StatusBadRequest, invalidCancelRec.Body.String())
+	}
+	if !engine.IsRunning(task.ID) {
+		t.Fatal("task stopped after invalid cancel request")
+	}
+
+	cancelRec := httptest.NewRecorder()
+	cancelReq := httptest.NewRequest(http.MethodPost, "/api/runs/active/"+start.RunID+"/cancel", bytes.NewReader([]byte(`{"reason":"api test"}`)))
+	mux.ServeHTTP(cancelRec, cancelReq)
+	if cancelRec.Code != http.StatusAccepted {
+		t.Fatalf("cancel status = %d, want %d; body=%s", cancelRec.Code, http.StatusAccepted, cancelRec.Body.String())
+	}
+
+	deadline := time.Now().Add(3 * time.Second)
+	for engine.IsRunning(task.ID) && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if engine.IsRunning(task.ID) {
+		t.Fatal("task still running after cancellation")
+	}
+	history := engine.RunHistory(task.ID)
+	if len(history) != 1 || !history[0].Outcome.Diagnostics.Canceled {
+		t.Fatalf("history = %+v, want canceled run", history)
+	}
+}
+
+func TestRetentionEndpoints(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+	dir := writeAPITaskPackage(t, "print('x' * 2048)\nprint('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ready\"}')\n", python, "")
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+	if _, err := engine.RunTask(task.ID, "manual"); err != nil {
+		t.Fatalf("RunTask 1: %v", err)
+	}
+	if _, err := engine.RunTask(task.ID, "manual"); err != nil {
+		t.Fatalf("RunTask 2: %v", err)
+	}
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+
+	body := []byte(`{"maxRunsPerTask":1,"maxRunOutputKB":1}`)
+	updateRec := httptest.NewRecorder()
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/retention", bytes.NewReader(body))
+	mux.ServeHTTP(updateRec, updateReq)
+	if updateRec.Code != http.StatusOK {
+		t.Fatalf("update status = %d, want %d; body=%s", updateRec.Code, http.StatusOK, updateRec.Body.String())
+	}
+	var report models.RetentionCleanupReport
+	if err := json.Unmarshal(updateRec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode retention report: %v", err)
+	}
+	if report.RunsDeleted != 1 || report.OutputBytesPruned == 0 || report.Policy.MaxRunOutputKB != 1 {
+		t.Fatalf("report = %+v, want deleted run and pruned output", report)
+	}
+
+	getRec := httptest.NewRecorder()
+	getReq := httptest.NewRequest(http.MethodGet, "/api/retention", nil)
+	mux.ServeHTTP(getRec, getReq)
+	if getRec.Code != http.StatusOK {
+		t.Fatalf("get status = %d, want %d; body=%s", getRec.Code, http.StatusOK, getRec.Body.String())
+	}
+	var policy models.RetentionPolicy
+	if err := json.Unmarshal(getRec.Body.Bytes(), &policy); err != nil {
+		t.Fatalf("decode retention policy: %v", err)
+	}
+	if policy.MaxRunsPerTask != 1 || !policy.OutputPruningEnabled {
+		t.Fatalf("policy = %+v, want updated retention policy", policy)
+	}
+
+	cleanupRec := httptest.NewRecorder()
+	cleanupReq := httptest.NewRequest(http.MethodPost, "/api/retention/cleanup", nil)
+	mux.ServeHTTP(cleanupRec, cleanupReq)
+	if cleanupRec.Code != http.StatusOK {
+		t.Fatalf("cleanup status = %d, want %d; body=%s", cleanupRec.Code, http.StatusOK, cleanupRec.Body.String())
+	}
+}
+
 func TestGetDeliveriesIncludesUsedByTasks(t *testing.T) {
 	dir := writeAPITaskPackage(t, "print('ok')\n", "", "delivery:\n  profiles: [telegram]\n")
 	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
@@ -662,4 +793,17 @@ func waitForAPIEnvironmentStateNotPending(t *testing.T, engine *core.Engine, tas
 		state = task.EnvironmentSetup.State
 	}
 	t.Fatalf("environment state remained %q before timeout", state)
+}
+
+func waitForAPIActiveRun(t *testing.T, engine *core.Engine, runID string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		info, err := engine.ActiveRun(runID)
+		if err == nil && info.StdoutTail != "" {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("active run %s did not report live output before timeout", runID)
 }

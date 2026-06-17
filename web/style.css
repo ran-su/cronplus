@@ -1554,3 +1554,95 @@ tr:hover td { background: rgba(255,255,255,0.03); }
 .health-warning {
     border-color: rgba(245, 158, 11, 0.26);
 }
+
+.retention-card,
+.active-runs-card {
+    margin-bottom: 24px;
+}
+
+.retention-form {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+    gap: 12px;
+    align-items: end;
+}
+
+.retention-form label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+}
+
+.retention-form label span,
+.active-run-logs span {
+    color: var(--text-secondary);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+}
+
+.retention-form .form-input {
+    min-width: 0;
+}
+
+.retention-meta,
+.retention-report {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 12px;
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+
+.retention-meta span,
+.retention-report span {
+    display: inline-flex;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: rgba(255,255,255,0.03);
+}
+
+.active-run-row {
+    grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.active-run-logs {
+    grid-column: 1 / -1;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+}
+
+.active-run-log {
+    max-height: 220px;
+    margin-top: 6px;
+    padding: 14px;
+    font-size: 12px;
+}
+
+.diagnosis-badges {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+}
+
+@media (max-width: 900px) {
+    .health-grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+    .retention-form {
+        grid-template-columns: 1fr;
+    }
+    .retention-form .btn {
+        justify-content: center;
+    }
+    .active-run-logs {
+        grid-template-columns: 1fr;
+    }
+}

@@ -239,11 +239,13 @@ MCP tools include:
 | `cronplus.tasks.environment` / `environment_rebuild` | Inspect environment paths/size and rebuild managed venvs |
 | `cronplus.schedules.preview` | Preview upcoming run times for a task or cron expression, including disabled tasks |
 | `cronplus.runs.start` / `list` / `get` / `wait` | Start manual runs and inspect imported-task run history. `list` supports status, trigger, aggregate delivery status (`success`, `failed`, `skipped`, `none`), search, and limit filters |
+| `cronplus.runs.active` / `active_get` / `cancel` | Inspect active runs with PID, elapsed time, run directory, live output tails, and request cancellation |
+| `cronplus.retention.get` / `update` / `cleanup` | Inspect and apply run-history retention settings |
 | `cronplus.deliveries.list` / `create` / `update` / `set_commands_enabled` / `remove` / `test` | Manage delivery profiles and send delivery tests |
 | `cronplus.commands.list` / `clear` | Inspect and clear inbound command log records |
 | `cronplus.system.pick_directory` | Open the daemon host's native directory picker when supported |
 
-MCP resources include `cronplus://status`, `cronplus://health`, `cronplus://tasks`, `cronplus://deliveries`, `cronplus://commands`, task/run/environment/dependency resource templates, the manifest schema, and the task-authoring guide. The SSE-only `/api/events` stream has no request/response MCP tool equivalent. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
+MCP resources include `cronplus://status`, `cronplus://health`, `cronplus://runs/active`, `cronplus://retention`, `cronplus://tasks`, `cronplus://deliveries`, `cronplus://commands`, active-run and task/run/environment/dependency resource templates, the manifest schema, and the task-authoring guide. The SSE-only `/api/events` stream has no request/response MCP tool equivalent. There is no HTTP MCP endpoint yet; MCP support is stdio-only.
 
 Delivery profile tools follow the daemon API contract. `cronplus.deliveries.list` returns redacted profile metadata only; bot tokens and chat IDs are never returned through MCP. `cronplus.deliveries.create` accepts `name`, `bot_token`, `chat_id`, optional `id`, `enabled`, `inbound_commands_enabled`, and `authorized_chat_ids`. `cronplus.deliveries.update` uses `profile_id` plus any fields to change; omitted secrets and omitted non-secret fields keep their existing values.
 
@@ -254,9 +256,9 @@ For imported tasks, use `cronplus.runs.start` to create real run history and `cr
 | Feature | Description |
 |---|---|
 | **Web UI** | Dark-themed dashboard with live updates via SSE |
-| **Run History** | Filterable task run history with diagnosis summaries and delivery state |
+| **Run History** | Filterable task run history with diagnosis summaries, delivery state, active-run cancellation, and retention controls |
 | **Task Dependencies** | Manifest dependencies with pre-run gating, UI health checks, and dependent-task discovery |
-| **Health Page** | Active runs, daemon paths, storage usage, environment sizes, and attention items |
+| **Health Page** | Active runs with live output tails, retention settings, daemon paths, storage usage, environment sizes, and attention items |
 | **Scheduler** | 5-field cron expressions with timezone support; 30-second evaluation tick (runs may start up to ~30s after the scheduled minute) |
 | **Python Envs** | System Python by default, managed venv per task, or custom venv |
 | **Delivery** | Telegram (more drivers planned) |
@@ -299,6 +301,20 @@ curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
 # Inspect health and maintenance data
 curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
   http://127.0.0.1:9876/api/health
+
+# Inspect active runs and cancel one by run ID
+curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  http://127.0.0.1:9876/api/runs/active
+curl -X POST -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"reason":"manual maintenance"}' \
+  http://127.0.0.1:9876/api/runs/active/{runID}/cancel
+
+# Bound run-history growth
+curl -X PUT -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \
+  -H "Content-Type: application/json" \
+  -d '{"maxRunsPerTask":50,"maxRunAgeDays":30,"maxRunOutputKB":256}' \
+  http://127.0.0.1:9876/api/retention
 
 # Inspect task dependency and environment state
 curl -H "Authorization: Bearer $(cat ~/.config/cronplus/auth-token)" \

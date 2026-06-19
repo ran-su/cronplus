@@ -93,6 +93,7 @@ type HealthReport struct {
 	Environments   HealthEnvironmentSummary `json:"environments"`
 	Storage        HealthStorageSummary     `json:"storage"`
 	Retention      RetentionPolicy          `json:"retention"`
+	Browser        BrowserHealthSummary     `json:"browser"`
 	ActiveRuns     []ActiveRunInfo          `json:"activeRuns"`
 	AttentionItems []map[string]any         `json:"attentionItems"`
 }
@@ -122,6 +123,25 @@ type HealthStorageSummary struct {
 	ConfigDir    DirectoryUsage `json:"configDir"`
 	TaskPackages DirectoryUsage `json:"taskPackages"`
 	Environments DirectoryUsage `json:"environments"`
+}
+
+type BrowserHealthSummary struct {
+	Tasks                       int             `json:"tasks"`
+	ActiveRuns                  int             `json:"activeRuns"`
+	RecentFailures              int             `json:"recentFailures"`
+	StaleRunDirectories         int             `json:"staleRunDirectories"`
+	StaleProfileDirectories     int             `json:"staleProfileDirectories"`
+	SuspectedProcesses          int             `json:"suspectedProcesses"`
+	ProfileBytes                int64           `json:"profileBytes"`
+	DownloadBytes               int64           `json:"downloadBytes"`
+	CacheBytes                  int64           `json:"cacheBytes"`
+	StaleRunDirectoryUsage      DirectoryUsage  `json:"staleRunDirectoryUsage"`
+	StaleProfileDirectoryUsage  DirectoryUsage  `json:"staleProfileDirectoryUsage"`
+	ActiveBrowserRuns           []ActiveRunInfo `json:"activeBrowserRuns,omitempty"`
+	RecentBrowserFailureTaskIDs []string        `json:"recentBrowserFailureTaskIDs,omitempty"`
+	StaleRunDirectoryPaths      []string        `json:"staleRunDirectoryPaths,omitempty"`
+	StaleProfileDirectoryPaths  []string        `json:"staleProfileDirectoryPaths,omitempty"`
+	BrowserTaskSlugs            []string        `json:"browserTaskSlugs,omitempty"`
 }
 
 type RetentionPolicy struct {

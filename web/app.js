@@ -1306,6 +1306,7 @@ function renderHealthContent() {
     const env = h.environments || {};
     const storage = h.storage || {};
     const server = h.server || {};
+    const browser = h.browser || {};
     return `
         <div class="attention-panel health-summary health-${esc(h.status || 'healthy')}">
             <div>
@@ -1319,6 +1320,7 @@ function renderHealthContent() {
             <div class="stat-card"><div class="stat-label">Runs</div><div class="stat-value ${(runs.recentFailures || 0) ? 'danger' : 'success'}">${runs.total || 0}</div><p>${runs.recentFailures || 0} failures in 24h</p></div>
             <div class="stat-card"><div class="stat-label">Environments</div><div class="stat-value">${formatBytes(env.totalBytes || 0)}</div><p>${env.managed || 0} managed · ${env.customVenv || 0} custom</p></div>
             <div class="stat-card"><div class="stat-label">Active Runs</div><div class="stat-value ${h.activeRuns?.length ? 'warning' : 'success'}">${(h.activeRuns || []).length}</div><p>${env.pending || 0} env pending · ${env.failed || 0} env failed</p></div>
+            <div class="stat-card"><div class="stat-label">Browser Tasks</div><div class="stat-value ${(browser.recentFailures || browser.suspectedProcesses) ? 'danger' : 'success'}">${browser.tasks || 0}</div><p>${browser.activeRuns || 0} active · ${browser.staleRunDirectories || 0} retained dirs</p></div>
         </div>
         <div class="health-grid">
             <div class="detail-card">
@@ -1336,6 +1338,7 @@ function renderHealthContent() {
                 <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
             </div>
         </div>
+        ${renderBrowserHealth(browser)}
         ${renderRetentionCard(h.retention || {})}
         ${renderActiveRuns(h.activeRuns || [])}
         ${renderAttentionItems(h.attentionItems || [])}
@@ -1393,6 +1396,34 @@ function renderRetentionCard(retention) {
 	`;
 }
 
+function renderBrowserHealth(browser) {
+    if (!browser || !(browser.tasks || browser.activeRuns || browser.staleRunDirectories || browser.recentFailures)) return '';
+    const bytes = (browser.profileBytes || 0) + (browser.downloadBytes || 0) + (browser.cacheBytes || 0);
+    return `
+        <div class="detail-card browser-health-card">
+            <div class="card-title-row">
+                <div>
+                    <h3>Browser Automation</h3>
+                    <p class="card-copy">${browser.activeRuns || 0} active browser runs, ${browser.recentFailures || 0} failures in 24h.</p>
+                </div>
+                <span class="badge badge-${browser.suspectedProcesses ? 'danger' : browser.staleRunDirectories ? 'warning' : 'success'}">${browser.suspectedProcesses || 0} leftover processes</span>
+            </div>
+            <div class="browser-health-grid">
+                <div><span>Profiles</span><strong>${formatBytes(browser.profileBytes || 0)}</strong></div>
+                <div><span>Downloads</span><strong>${formatBytes(browser.downloadBytes || 0)}</strong></div>
+                <div><span>Cache</span><strong>${formatBytes(browser.cacheBytes || 0)}</strong></div>
+                <div><span>Total</span><strong>${formatBytes(bytes)}</strong></div>
+            </div>
+            ${((browser.staleRunDirectoryPaths || []).length || (browser.staleProfileDirectoryPaths || []).length) ? `<div class="retention-report">
+                <span>${browser.staleRunDirectories || 0} retained run dirs</span>
+                <span>${formatBytes(browser.staleRunDirectoryUsage?.bytes || 0)} retained bytes</span>
+                <span>${browser.staleProfileDirectories || 0} retained profiles</span>
+                <span>${formatBytes(browser.staleProfileDirectoryUsage?.bytes || 0)} profile bytes</span>
+            </div>` : ''}
+        </div>
+    `;
+}
+
 function renderActiveRuns(activeRuns) {
     if (!activeRuns.length) return '';
     return `
@@ -1421,6 +1452,8 @@ function renderActiveRuns(activeRuns) {
                             <span><span class="run-history-label">Python</span>${esc(run.pythonExecutable || '—')}</span>
                             <span><span class="run-history-label">Working Dir</span>${esc(run.workingDirectory || '—')}</span>
                             <span><span class="run-history-label">Run Dir</span>${esc(run.runDirectory || '—')}</span>
+                            ${run.browser?.enabled ? `<span><span class="run-history-label">Browser Profile</span>${esc(run.browser.profilePath || '—')}</span>` : ''}
+                            ${run.browser?.enabled ? `<span><span class="run-history-label">Downloads</span>${esc(run.browser.downloadPath || '—')}</span>` : ''}
                         </div>
                         ${run.cancelReason ? `<div class="run-history-summary">Cancel reason: ${esc(run.cancelReason)}</div>` : ''}
                         ${renderActiveRunLogs(run)}

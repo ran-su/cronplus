@@ -1,0 +1,27 @@
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Browser Manager
+  description: Starts or refreshes a visible browser session for dependent browser tasks.
+runtime:
+  environment:
+    strategy: managed_venv
+    requirements_file: ./requirements.txt
+  timeout_seconds: 300
+  max_output_kb: 256
+  isolated_run: false
+  browser:
+    enabled: true
+    profile_mode: shared_external
+    profile_source: ./profile
+    downloads_mode: default
+    cache_policy: default
+    cleanup_policy: keep_always
+    process_detection_hints: [Chromium, Chrome, cloakbrowser]
+schedule:
+  expression: "0 * * * *"
+  timezone: UTC
+delivery:
+  send_on: [failure, warning]
+result_contract:
+  expect_structured_result: true

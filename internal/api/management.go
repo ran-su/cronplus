@@ -2,6 +2,9 @@ package api
 
 import (
 	"net/http"
+	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -306,11 +309,12 @@ func handleGetHealth(engine *core.Engine, info ServerInfo) http.HandlerFunc {
 		report.Storage.ConfigDir = core.DirectoryUsage(info.ConfigDir)
 		report.Storage.TaskPackages = sumDirectoryUsage(taskPackageUsages)
 		report.Storage.Environments = sumDirectoryUsage(environmentUsages)
+		report.Browser = buildBrowserHealth(engine, tasks, report.ActiveRuns)
 
-		if report.Environments.Failed > 0 || report.Runs.RecentFailures > 0 || hasDangerAttention(report.AttentionItems) {
+		if report.Environments.Failed > 0 || report.Runs.RecentFailures > 0 || report.Browser.SuspectedProcesses > 0 || hasDangerAttention(report.AttentionItems) {
 			report.Status = "attention"
 			report.Summary = "CronPlus has failed runs, failed environments, or critical attention items."
-		} else if report.Environments.Pending > 0 || len(report.AttentionItems) > 0 {
+		} else if report.Environments.Pending > 0 || report.Browser.StaleRunDirectories > 0 || len(report.AttentionItems) > 0 {
 			report.Status = "warning"
 			report.Summary = "CronPlus is running, with items to review."
 		}
@@ -451,6 +455,125 @@ func sumDirectoryUsage(usages []models.DirectoryUsage) models.DirectoryUsage {
 		}
 	}
 	return total
+}
+
+func buildBrowserHealth(engine *core.Engine, tasks []*models.Task, activeRuns []models.ActiveRunInfo) models.BrowserHealthSummary {
+	now := time.Now()
+	health := models.BrowserHealthSummary{}
+	browserTaskIDs := map[string]bool{}
+	failureTaskIDs := map[string]bool{}
+	staleRunPaths := map[string]bool{}
+	staleProfilePaths := map[string]bool{}
+	activeRunPaths := map[string]bool{}
+
+	for _, task := range tasks {
+		if task == nil || task.Manifest == nil || !task.Manifest.Runtime.Browser.Enabled {
+			continue
+		}
+		browserTaskIDs[task.ID] = true
+		health.Tasks++
+		health.BrowserTaskSlugs = append(health.BrowserTaskSlugs, task.Slug())
+		for _, run := range engine.RunHistory(task.ID) {
+			browser := run.Outcome.Diagnostics.Browser
+			if !browser.Enabled {
+				continue
+			}
+			if models.RunStatusFromOutcome(run.Outcome) == "failure" && now.Sub(run.FinishedAt) < 24*time.Hour {
+				if !failureTaskIDs[task.ID] {
+					failureTaskIDs[task.ID] = true
+					health.RecentFailures++
+					health.RecentBrowserFailureTaskIDs = append(health.RecentBrowserFailureTaskIDs, task.ID)
+				}
+			}
+			health.SuspectedProcesses += browser.SuspectedLeftoverProcesses
+			collectBrowserPath(staleRunPaths, run.Outcome.Diagnostics.RunDirectory, browser.RunDirectoryRetained)
+			collectBrowserPath(staleProfilePaths, browser.ProfilePath, browser.RunDirectoryRetained && browser.ProfileMode != "shared_external")
+			addBrowserUsage(&health, browser)
+		}
+	}
+	for _, run := range activeRuns {
+		if run.Browser.Enabled || browserTaskIDs[run.TaskID] {
+			health.ActiveRuns++
+			health.ActiveBrowserRuns = append(health.ActiveBrowserRuns, run)
+			if run.RunDirectory != "" {
+				activeRunPaths[run.RunDirectory] = true
+			}
+			collectBrowserPath(staleProfilePaths, run.Browser.ProfilePath, false)
+			addBrowserUsage(&health, run.Browser)
+		}
+	}
+	for _, path := range retainedCronPlusRunDirectories(activeRunPaths) {
+		collectBrowserPath(staleRunPaths, path, true)
+		collectBrowserPath(staleProfilePaths, filepath.Join(path, "browser-profile"), true)
+	}
+	health.StaleRunDirectoryPaths = sortedKeys(staleRunPaths)
+	health.StaleProfileDirectoryPaths = sortedKeys(staleProfilePaths)
+	health.StaleRunDirectories = len(health.StaleRunDirectoryPaths)
+	health.StaleProfileDirectories = len(health.StaleProfileDirectoryPaths)
+	health.StaleRunDirectoryUsage = usageForPaths(health.StaleRunDirectoryPaths)
+	health.StaleProfileDirectoryUsage = usageForPaths(health.StaleProfileDirectoryPaths)
+	return health
+}
+
+func collectBrowserPath(paths map[string]bool, path string, include bool) {
+	path = strings.TrimSpace(path)
+	if include && path != "" {
+		paths[path] = true
+	}
+}
+
+func addBrowserUsage(health *models.BrowserHealthSummary, browser models.BrowserRunDiagnostics) {
+	if health == nil || !browser.Enabled {
+		return
+	}
+	if browser.ProfilePath != "" && browser.ProfileMode != "shared_external" {
+		health.ProfileBytes += core.DirectoryUsage(browser.ProfilePath).Bytes
+	}
+	if browser.DownloadPath != "" {
+		health.DownloadBytes += core.DirectoryUsage(browser.DownloadPath).Bytes
+	}
+	if browser.CachePath != "" {
+		health.CacheBytes += core.DirectoryUsage(browser.CachePath).Bytes
+	}
+}
+
+func retainedCronPlusRunDirectories(skip map[string]bool) []string {
+	root := filepath.Join(os.TempDir(), "cronplus-runs")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil
+	}
+	var paths []string
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		path := filepath.Join(root, entry.Name())
+		if skip[path] {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(path, "browser-profile")); err == nil {
+			paths = append(paths, path)
+		}
+	}
+	return paths
+}
+
+func usageForPaths(paths []string) models.DirectoryUsage {
+	usages := make([]models.DirectoryUsage, 0, len(paths))
+	for _, path := range paths {
+		usages = append(usages, core.DirectoryUsage(path))
+	}
+	return sumDirectoryUsage(usages)
+}
+
+func sortedKeys(values map[string]bool) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func hasDangerAttention(items []map[string]any) bool {

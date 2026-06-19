@@ -130,6 +130,7 @@ func ensureSQLiteActiveRunColumns(db *sql.DB) error {
 		{"task_name", "TEXT"},
 		{"task_slug", "TEXT"},
 		{"trigger", "TEXT"},
+		{"browser_json", "TEXT"},
 		{"python_executable", "TEXT"},
 		{"script_path", "TEXT"},
 		{"working_directory", "TEXT"},
@@ -219,6 +220,7 @@ func createSQLiteSchema(db *sql.DB) error {
 			task_name TEXT,
 			task_slug TEXT,
 			trigger TEXT,
+			browser_json TEXT,
 			root_pid INTEGER,
 			process_group_id INTEGER,
 			run_directory TEXT,
@@ -466,7 +468,7 @@ func readSQLiteDeliveryResults(db *sql.DB) (map[string][]models.DeliveryResult, 
 }
 
 func readSQLiteActiveRuns(db *sql.DB) ([]models.ActiveRunInfo, error) {
-	rows, err := db.Query(`SELECT task_id, run_id, task_name, task_slug, trigger, root_pid, process_group_id, run_directory, python_executable, script_path, working_directory, environment_strategy, timeout_seconds, max_output_kb, started_at, cancel_requested, cancel_reason, cancel_requested_at, stdout_tail, stderr_tail FROM active_runs ORDER BY started_at`)
+	rows, err := db.Query(`SELECT task_id, run_id, task_name, task_slug, trigger, browser_json, root_pid, process_group_id, run_directory, python_executable, script_path, working_directory, environment_strategy, timeout_seconds, max_output_kb, started_at, cancel_requested, cancel_reason, cancel_requested_at, stdout_tail, stderr_tail FROM active_runs ORDER BY started_at`)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read active runs: %w", err)
 	}
@@ -475,14 +477,19 @@ func readSQLiteActiveRuns(db *sql.DB) ([]models.ActiveRunInfo, error) {
 	for rows.Next() {
 		var info models.ActiveRunInfo
 		var startedAt string
-		var taskName, taskSlug, trigger, runDirectory, pythonExecutable, scriptPath, workingDirectory, environmentStrategy, cancelReason, cancelRequestedAt, stdoutTail, stderrTail sql.NullString
-		var timeoutSeconds, maxOutputKB, cancelRequested sql.NullInt64
-		if err := rows.Scan(&info.TaskID, &info.RunID, &taskName, &taskSlug, &trigger, &info.RootPID, &info.ProcessGroupID, &runDirectory, &pythonExecutable, &scriptPath, &workingDirectory, &environmentStrategy, &timeoutSeconds, &maxOutputKB, &startedAt, &cancelRequested, &cancelReason, &cancelRequestedAt, &stdoutTail, &stderrTail); err != nil {
+		var taskName, taskSlug, trigger, browserJSON, runDirectory, pythonExecutable, scriptPath, workingDirectory, environmentStrategy, cancelReason, cancelRequestedAt, stdoutTail, stderrTail sql.NullString
+		var rootPID, processGroupID, timeoutSeconds, maxOutputKB, cancelRequested sql.NullInt64
+		if err := rows.Scan(&info.TaskID, &info.RunID, &taskName, &taskSlug, &trigger, &browserJSON, &rootPID, &processGroupID, &runDirectory, &pythonExecutable, &scriptPath, &workingDirectory, &environmentStrategy, &timeoutSeconds, &maxOutputKB, &startedAt, &cancelRequested, &cancelReason, &cancelRequestedAt, &stdoutTail, &stderrTail); err != nil {
 			return nil, fmt.Errorf("failed to scan active run: %w", err)
 		}
 		info.TaskName = taskName.String
 		info.TaskSlug = taskSlug.String
 		info.Trigger = trigger.String
+		if browserJSON.Valid && browserJSON.String != "" {
+			_ = json.Unmarshal([]byte(browserJSON.String), &info.Browser)
+		}
+		info.RootPID = int(rootPID.Int64)
+		info.ProcessGroupID = int(processGroupID.Int64)
 		info.RunDirectory = runDirectory.String
 		info.PythonExecutable = pythonExecutable.String
 		info.ScriptPath = scriptPath.String
@@ -662,7 +669,7 @@ func writeSQLiteRunHistory(tx *sql.Tx, runHistory map[string][]models.RunRecord)
 }
 
 func writeSQLiteActiveRuns(tx *sql.Tx, activeRuns []models.ActiveRunInfo) error {
-	stmt, err := tx.Prepare(`INSERT INTO active_runs(task_id, run_id, task_name, task_slug, trigger, root_pid, process_group_id, run_directory, python_executable, script_path, working_directory, environment_strategy, timeout_seconds, max_output_kb, started_at, cancel_requested, cancel_reason, cancel_requested_at, stdout_tail, stderr_tail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.Prepare(`INSERT INTO active_runs(task_id, run_id, task_name, task_slug, trigger, browser_json, root_pid, process_group_id, run_directory, python_executable, script_path, working_directory, environment_strategy, timeout_seconds, max_output_kb, started_at, cancel_requested, cancel_reason, cancel_requested_at, stdout_tail, stderr_tail) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("failed to prepare active run insert: %w", err)
 	}
@@ -672,7 +679,14 @@ func writeSQLiteActiveRuns(tx *sql.Tx, activeRuns []models.ActiveRunInfo) error 
 		if info.CancelRequestedAt != nil {
 			cancelRequestedAt = formatSQLiteTime(*info.CancelRequestedAt)
 		}
-		if _, err := stmt.Exec(info.TaskID, info.RunID, nullString(info.TaskName), nullString(info.TaskSlug), nullString(info.Trigger), info.RootPID, info.ProcessGroupID, nullString(info.RunDirectory), nullString(info.PythonExecutable), nullString(info.ScriptPath), nullString(info.WorkingDirectory), nullString(info.EnvironmentStrategy), info.TimeoutSeconds, info.MaxOutputKB, formatSQLiteTime(info.StartedAt), boolInt(info.CancelRequested), nullString(info.CancelReason), nullString(cancelRequestedAt), nullString(info.StdoutTail), nullString(info.StderrTail)); err != nil {
+		browserJSON, err := marshalJSONString(info.Browser)
+		if err != nil {
+			return fmt.Errorf("failed to encode active run browser diagnostics for %s: %w", info.RunID, err)
+		}
+		if !info.Browser.Enabled {
+			browserJSON = ""
+		}
+		if _, err := stmt.Exec(info.TaskID, info.RunID, nullString(info.TaskName), nullString(info.TaskSlug), nullString(info.Trigger), nullString(browserJSON), info.RootPID, info.ProcessGroupID, nullString(info.RunDirectory), nullString(info.PythonExecutable), nullString(info.ScriptPath), nullString(info.WorkingDirectory), nullString(info.EnvironmentStrategy), info.TimeoutSeconds, info.MaxOutputKB, formatSQLiteTime(info.StartedAt), boolInt(info.CancelRequested), nullString(info.CancelReason), nullString(cancelRequestedAt), nullString(info.StdoutTail), nullString(info.StderrTail)); err != nil {
 			return fmt.Errorf("failed to write active run %s: %w", info.RunID, err)
 		}
 	}

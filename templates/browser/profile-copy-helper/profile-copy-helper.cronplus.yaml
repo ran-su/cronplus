@@ -1,0 +1,24 @@
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Browser Profile Copy Check
+  description: Copies a durable browser profile into an isolated run profile and reports copy size.
+runtime:
+  environment:
+    strategy: system
+  timeout_seconds: 120
+  max_output_kb: 128
+  browser:
+    enabled: true
+    profile_mode: copy_from
+    profile_source: ./source-profile
+    downloads_mode: isolated
+    cache_policy: isolated
+    cleanup_policy: keep_on_failure
+schedule:
+  expression: "0 0 * * *"
+  timezone: UTC
+delivery:
+  send_on: [failure, warning]
+result_contract:
+  expect_structured_result: true

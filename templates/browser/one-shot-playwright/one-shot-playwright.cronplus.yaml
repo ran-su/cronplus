@@ -1,0 +1,25 @@
+manifest_version: 1
+script:
+  path: ./script.py
+  name: One-Shot Browser Monitor
+  description: Opens a visible Playwright Chromium run with an isolated per-run profile.
+runtime:
+  environment:
+    strategy: managed_venv
+    requirements_file: ./requirements.txt
+  timeout_seconds: 240
+  max_output_kb: 256
+  browser:
+    enabled: true
+    profile_mode: isolated
+    downloads_mode: isolated
+    cache_policy: isolated
+    cleanup_policy: keep_on_failure
+    process_detection_hints: [Chromium, Chrome]
+schedule:
+  expression: "*/15 * * * *"
+  timezone: UTC
+delivery:
+  send_on: [failure, warning]
+result_contract:
+  expect_structured_result: true

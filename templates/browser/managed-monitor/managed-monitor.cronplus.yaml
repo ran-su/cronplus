@@ -1,0 +1,32 @@
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Managed Browser Monitor
+  description: Uses an existing browser manager run through a freshness dependency.
+runtime:
+  environment:
+    strategy: managed_venv
+    requirements_file: ./requirements.txt
+  timeout_seconds: 180
+  max_output_kb: 256
+  isolated_run: false
+  browser:
+    enabled: true
+    profile_mode: shared_external
+    profile_source: ./profile
+    downloads_mode: default
+    cache_policy: default
+    cleanup_policy: keep_on_failure
+schedule:
+  expression: "*/5 * * * *"
+  timezone: UTC
+dependencies:
+  tasks:
+    - slug: browser-manager
+      require_status: success
+      max_age_seconds: 3900
+      on_unhealthy: skip
+delivery:
+  send_on: [failure, warning]
+result_contract:
+  expect_structured_result: true

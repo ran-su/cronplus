@@ -438,6 +438,62 @@ func TestRetentionEndpoints(t *testing.T) {
 	}
 }
 
+func TestHealthIncludesBrowserSummary(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("print('CRONPLUS_RESULT={\"status\":\"failure\",\"summary\":\"browser failed\"}')\n"), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	manifest := `manifest_version: 1
+script:
+  path: ./script.py
+  name: Browser Health Task
+runtime:
+  environment:
+    strategy: system
+  timeout_seconds: 5
+  max_output_kb: 64
+  browser:
+    enabled: true
+    cleanup_policy: keep_on_failure
+schedule:
+  expression: "*/5 * * * *"
+`
+	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	task, err := engine.ImportTask(dir, true)
+	if err != nil {
+		t.Fatalf("ImportTask: %v", err)
+	}
+	if _, err := engine.RunTask(task.ID, "manual"); err != nil {
+		t.Fatalf("RunTask: %v", err)
+	}
+	defer func() {
+		for _, run := range engine.RunHistory(task.ID) {
+			if run.Outcome.Diagnostics.RunDirectory != "" {
+				_ = os.RemoveAll(run.Outcome.Diagnostics.RunDirectory)
+			}
+		}
+	}()
+
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/health", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body=%s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var response models.HealthReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if response.Browser.Tasks != 1 || response.Browser.RecentFailures != 1 || response.Browser.StaleRunDirectories == 0 {
+		t.Fatalf("browser health = %+v, want task, failure, and retained directory", response.Browser)
+	}
+}
+
 func TestGetDeliveriesIncludesUsedByTasks(t *testing.T) {
 	dir := writeAPITaskPackage(t, "print('ok')\n", "", "delivery:\n  profiles: [telegram]\n")
 	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)

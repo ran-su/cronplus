@@ -109,15 +109,8 @@ func cliAutostartInstall(args []string) int {
 			return 1
 		}
 	}
-	if isLikelyGoRunExecutable(resolvedBinaryPath) {
-		fmt.Fprintln(os.Stderr, "autostart cannot use a temporary go run binary; build or install cronplus first")
-		return 1
-	}
-	if info, err := os.Stat(resolvedBinaryPath); err != nil {
+	if err := validateLaunchBinary(resolvedBinaryPath); err != nil {
 		fmt.Fprintf(os.Stderr, "binary path: %v\n", err)
-		return 1
-	} else if info.IsDir() {
-		fmt.Fprintf(os.Stderr, "binary path is a directory: %s\n", resolvedBinaryPath)
 		return 1
 	}
 
@@ -302,9 +295,95 @@ func expandAndAbsPath(path, home string) (string, error) {
 	return filepath.Abs(path)
 }
 
-func isLikelyGoRunExecutable(path string) bool {
+func validateLaunchBinary(path string) error {
+	if err := validateExecutableBinary(path); err != nil {
+		return err
+	}
+	resolvedPath := path
+	if evaluatedPath, err := filepath.EvalSymlinks(path); err == nil {
+		resolvedPath = evaluatedPath
+	}
+	if isLikelyUnstableExecutablePath(resolvedPath) {
+		return fmt.Errorf("looks like a temporary build or installer path; install cronplus to a stable location first and pass that path with --path")
+	}
+	return nil
+}
+
+func validateExecutableBinary(path string) error {
+	if !filepath.IsAbs(path) {
+		return fmt.Errorf("must be absolute: %s", path)
+	}
+	resolvedPath := path
+	if evaluatedPath, err := filepath.EvalSymlinks(path); err == nil {
+		resolvedPath = evaluatedPath
+	}
+	info, err := os.Stat(resolvedPath)
+	if err != nil {
+		return err
+	}
+	if info.IsDir() {
+		return fmt.Errorf("is a directory: %s", path)
+	}
+	if info.Mode().IsRegular() && info.Mode()&0o111 == 0 {
+		return fmt.Errorf("is not executable: %s", path)
+	}
+	script, err := looksLikeLauncherScript(resolvedPath)
+	if err != nil {
+		return fmt.Errorf("cannot inspect executable: %w", err)
+	}
+	if script {
+		return fmt.Errorf("is a launcher script, not the cronplus binary; install the real binary to a stable path first")
+	}
+	return nil
+}
+
+func isLikelyUnstableExecutablePath(path string) bool {
 	cleanPath := filepath.Clean(path)
-	return strings.Contains(cleanPath, string(filepath.Separator)+"go-build")
+	slashPath := filepath.ToSlash(cleanPath)
+	for _, root := range []string{"/tmp", "/private/tmp", filepath.ToSlash(os.TempDir())} {
+		root = strings.TrimRight(filepath.Clean(root), string(filepath.Separator))
+		root = filepath.ToSlash(root)
+		if pathWithin(slashPath, root) {
+			return true
+		}
+	}
+	if strings.HasPrefix(slashPath, "/var/folders/") || strings.HasPrefix(slashPath, "/private/var/folders/") {
+		return true
+	}
+	if strings.Contains(slashPath, "/go-build") || strings.Contains(slashPath, "/.cache/go-build/") {
+		return true
+	}
+	if strings.Contains(slashPath, "/install-github-") && strings.Contains(slashPath, "/work/") {
+		return true
+	}
+	parts := strings.Split(slashPath, "/")
+	for i := 0; i < len(parts)-1; i++ {
+		if parts[i] == "work" && strings.HasPrefix(parts[i+1], "cronplus-") {
+			return true
+		}
+	}
+	return false
+}
+
+func pathWithin(path, root string) bool {
+	if root == "" || root == "." {
+		return false
+	}
+	return path == root || strings.HasPrefix(path, root+"/")
+}
+
+func looksLikeLauncherScript(path string) (bool, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+	header := make([]byte, 2)
+	n, err := file.Read(header)
+	if err != nil && n == 0 {
+		return false, err
+	}
+	return n >= 2 && header[0] == '#' && header[1] == '!', nil
 }
 
 func launchAgentPath(home string) string {

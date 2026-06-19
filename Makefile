@@ -6,6 +6,7 @@ BUILD_FLAGS=-ldflags "-s -w -X main.version=$(VERSION)"
 GO_CACHE_DIR ?= $(CURDIR)/.cache/go-build
 GO_MOD_CACHE_DIR ?= $(CURDIR)/.cache/go-mod
 GO_ENV=GOCACHE="$(GO_CACHE_DIR)" GOMODCACHE="$(GO_MOD_CACHE_DIR)"
+INSTALL_BINDIR ?= $(shell if [ -d /opt/homebrew/bin ]; then echo /opt/homebrew/bin; else echo /usr/local/bin; fi)
 
 build:
 	$(GO_ENV) go build $(BUILD_FLAGS) -o $(BINARY_NAME) .
@@ -21,12 +22,13 @@ clean:
 	$(GO_ENV) go clean
 
 install: build
-	cp $(BINARY_NAME) /usr/local/bin/$(BINARY_NAME)
-	@echo "Installed $(BINARY_NAME) to /usr/local/bin/"
+	install -d "$(INSTALL_BINDIR)"
+	install -m 0755 "$(BINARY_NAME)" "$(INSTALL_BINDIR)/$(BINARY_NAME)"
+	@echo "Installed $(BINARY_NAME) to $(INSTALL_BINDIR)/"
 
 uninstall:
-	rm -f /usr/local/bin/$(BINARY_NAME)
-	@echo "Removed $(BINARY_NAME) from /usr/local/bin/"
+	rm -f "$(INSTALL_BINDIR)/$(BINARY_NAME)"
+	@echo "Removed $(BINARY_NAME) from $(INSTALL_BINDIR)/"
 
 lint:
 	$(GO_ENV) go vet ./...

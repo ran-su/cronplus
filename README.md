@@ -148,6 +148,46 @@ Package checks do not satisfy dependencies. `cronplus check` and the web UI **Di
 
 The web UI task detail page shows dependency health for every configured prerequisite and lists downstream dependents. The API and MCP tools expose the same information through dependency-health and dependents endpoints/tools.
 
+### Browser Automation Tasks
+
+CronPlus has first-class support for scheduled visible-browser scripts through `runtime.browser`. This is intended for Playwright, Chromium, Chrome, or browser wrappers that cannot run headless because the target site uses bot checks.
+
+```yaml
+runtime:
+  browser:
+    enabled: true
+    profile_mode: isolated        # isolated | copy_from | shared_external
+    profile_source: ./profile     # required for copy_from/shared_external
+    downloads_mode: isolated      # isolated | default
+    cache_policy: isolated        # isolated | default | disabled
+    cleanup_policy: keep_on_failure
+    process_detection_hints: [Chromium, Chrome, cloakbrowser]
+```
+
+Supported patterns:
+
+| Pattern | Use When |
+|---|---|
+| Per-run temporary profile: `profile_mode: isolated` | Each run can start clean and should leave no durable browser state. |
+| Copied durable profile: `profile_mode: copy_from` | The task needs cookies/localStorage from a known profile but should mutate only a per-run copy. |
+| Shared long-running browser manager: `profile_mode: shared_external` | A manager task owns the visible browser, and monitor tasks connect over CDP or a local debug port. |
+| Dependency on browser freshness | Monitor tasks should run only after the browser manager has a recent successful run. |
+
+Browser-enabled runs record the resolved profile, download, and cache paths; profile-copy status; cleanup policy; cleanup status; suspected leftover process count; and browser output bytes. When `profile_mode: copy_from` cannot copy the source profile, CronPlus fails the run before launching the script so the task does not navigate with an empty or partial profile. `downloads_mode: default` and `cache_policy: default` leave the corresponding browser path variables empty; `cache_policy: disabled` also leaves the cache path empty so the script can pass browser-specific no-cache flags.
+
+`process_detection_hints` are recorded in diagnostics and exposed to the script as `CRONPLUS_BROWSER_PROCESS_HINTS`. CronPlus process cleanup still primarily identifies detached children by process group and references to the isolated run directory; shared external browser managers should own their own recycling logic.
+
+The Health page includes a Browser Automation section with active browser runs, recent browser failures, retained run/profile directories, and browser storage usage.
+
+Official templates are under `templates/browser`:
+
+- `browser-manager`: starts or safely refreshes a visible browser session. By default it recycles only a process whose command line contains its configured `--user-data-dir`; if the debug port is owned by something else, it fails instead of killing an unrelated process. Set `BROWSER_RESTART_EXISTING=0` to only check/reuse an existing session.
+- `managed-monitor`: connects to the existing browser manager and uses a dependency freshness gate.
+- `one-shot-playwright`: opens a visible isolated Playwright Chromium context for one run.
+- `profile-copy-helper`: verifies copied-profile behavior and reports copied profile size.
+
+On macOS, long-lived visible Chromium sessions can accumulate GPU, compositor, extension, profile-cache, or WindowServer pressure. Restart browser-manager sessions periodically, keep monitor tasks short, prefer `copy_from` when a task needs cookies but not persistent mutation, and use `keep_on_failure` only while debugging. `--disable-gpu` can reduce GPU/WindowServer pressure for some sites, but it can also change rendering and fingerprint signals. Headless mode may fail on antibot-heavy sites because browser fingerprints, extension state, windowing APIs, and user-session behavior differ from a normal visible browser.
+
 ### Task Lifecycle
 
 CronPlus does not create task packages and does not edit task files. AI agents or humans create package directories that follow the manifest contract; CronPlus imports those packages, validates them, schedules them, and records runs.
@@ -187,6 +227,10 @@ cronplus run <task-id>
 # Serve MCP over stdio for MCP-capable AI clients
 cronplus mcp
 
+# Download the latest GitHub release and replace the installed binary
+cronplus update
+cronplus update --dry-run
+
 # Manage macOS autostart
 cronplus autostart install
 cronplus autostart status
@@ -196,6 +240,8 @@ cronplus autostart uninstall
 The machine-readable schema is also available in `schemas/manifest.schema.json`.
 
 Daemon API commands use `CRONPLUS_PORT` when it is set. Otherwise they read the active port from `~/.config/cronplus/daemon.lock`, then fall back to `9876`.
+
+`cronplus update` fetches the latest release from GitHub, selects the asset for the current OS/architecture, extracts the real `cronplus` binary, rejects launcher scripts or unsafe archives, and replaces the installed binary. By default it updates the current stable executable path when possible, otherwise `/opt/homebrew/bin/cronplus` on Apple Silicon/Homebrew Macs or `/usr/local/bin/cronplus` elsewhere. Use `--path /absolute/path/to/cronplus` to override the install target, `--dry-run` to inspect the selected release without changing files, and `--force` to reinstall the same version. Private or rate-limited GitHub access can use `GITHUB_TOKEN`.
 
 ## MCP
 
@@ -391,6 +437,15 @@ CRONPLUS_MAX_CONCURRENT_RUNS=1 ./cronplus
 ```bash
 # Install the binary somewhere stable
 make install
+# Override when needed, for example:
+# make install INSTALL_BINDIR=/usr/local/bin
+
+# Confirm the shell will run the freshly installed binary
+command -v cronplus
+cronplus --help
+
+# Later upgrades can be installed from GitHub releases
+cronplus update
 
 # Install and load the user LaunchAgent
 cronplus autostart install
@@ -407,6 +462,8 @@ cronplus autostart uninstall
 ```
 
 The service keeps CronPlus running in the background, starts it at login, and restarts it automatically. The command writes `~/Library/LaunchAgents/com.cronplus.daemon.plist` and logs to `~/Library/Logs/cronplus.log`. If CronPlus is already running when you install autostart, the command installs the LaunchAgent without starting a second daemon.
+
+On Apple Silicon Macs, `make install` defaults to `/opt/homebrew/bin` when that directory exists; otherwise it uses `/usr/local/bin`. This avoids leaving an older `cronplus` earlier in `PATH`. Autostart refuses temporary build paths and shell launcher wrappers because launchd needs the real CronPlus binary at a stable, executable path.
 
 ## Configuration
 

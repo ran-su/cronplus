@@ -26,7 +26,11 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/cronplus-darwin-arm64 .
 1. Start CronPlus with an existing config directory that contains imported tasks and delivery profiles.
 2. Confirm `state.db` is created or opened successfully.
 3. If a legacy `state.json` is present, confirm tasks, delivery profiles, app settings, and recent usable run history are visible after startup.
-4. Open the web UI and confirm Dashboard, Tasks, Delivery, Commands, Health, and Settings load without API errors.
+4. On macOS, run `make install`, then confirm `command -v cronplus` points at the installed stable binary and `cronplus --help` does not execute a shell wrapper or temporary installer path.
+5. Run `cronplus update --dry-run` and confirm it selects the current OS/arch release asset and stable install path.
+6. Run `cronplus autostart install --no-start` from the stable binary and confirm the generated LaunchAgent points at that binary.
+7. Run negative autostart checks with `--path` values for a temporary build path, a shell launcher wrapper, and a non-executable file; confirm each is rejected.
+8. Open the web UI and confirm Dashboard, Tasks, Delivery, Commands, Health, and Settings load without API errors.
 
 ## Task Lifecycle Smoke
 
@@ -39,9 +43,11 @@ Use a small package with `managed_venv`, structured output, and at least one del
 5. Run **Run Now** and confirm a real run history row appears.
 6. Open the run detail page and confirm status, trigger, duration, stdout/stderr, parsed result, diagnosis, cleanup, and delivery results are readable.
 7. Start a long-running task, confirm it appears on Health with PID/process group, elapsed time, output tail, and run directory, then cancel it and confirm a canceled run record is saved.
-8. Reload the manifest and confirm task ID and run history are preserved.
-9. Disable and re-enable the task.
-10. Remove the import and confirm the package files remain on disk.
+8. Validate or import a `templates/browser` package and confirm browser policy validation succeeds.
+9. Run or inspect a browser-enabled task and confirm Health shows Browser Automation counts, retained profile/run directory usage, recent failures, and active browser runs when present.
+10. Reload the manifest and confirm task ID and run history are preserved.
+11. Disable and re-enable the task.
+12. Remove the import and confirm the package files remain on disk.
 
 ## Dependency Smoke
 
@@ -82,6 +88,6 @@ Open the web UI in a browser and inspect desktop and narrow mobile widths:
 5. Run detail stdout/stderr blocks scroll instead of stretching the layout.
 6. Delivery profile forms and edit/test/delete buttons fit.
 7. Import modal path picker, diagnostic check result, and import actions fit.
-8. Health storage, daemon, active-run, retention, and attention sections are readable.
+8. Health storage, daemon, browser automation, active-run, retention, and attention sections are readable.
 9. Active-run cancel controls fit and retention inputs do not overlap at desktop or narrow widths.
 10. Settings daemon paths wrap without forcing horizontal page scroll.

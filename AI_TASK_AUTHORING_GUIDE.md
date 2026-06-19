@@ -124,10 +124,11 @@ CronPlus protects itself, but the task script should still be careful:
 - Wrap cleanup in `try/finally` or context managers.
 - Do not create background daemons or infinite loops.
 - Do not write large unbounded logs; CronPlus truncates output, but concise logs are easier to debug.
-- For browser automation, always use CronPlus run directories:
+- For browser automation, use CronPlus browser paths when the manifest policy provides them:
   - user data/profile: `CRONPLUS_BROWSER_USER_DATA_DIR`
   - downloads: `CRONPLUS_BROWSER_DOWNLOADS_DIR`
   - cache: `CRONPLUS_BROWSER_CACHE_DIR`
+- Set `runtime.browser.enabled: true` for Playwright/Chromium tasks so CronPlus records browser diagnostics and health signals.
 - For temporary files, use `CRONPLUS_RUN_DIR` or the standard temp directory after CronPlus has set `TMPDIR`.
 - Do not store durable task state in the isolated run directory; it is removed after the run. Store intentional durable state in the package directory or an explicitly configured path.
 
@@ -140,8 +141,24 @@ CronPlus injects these environment variables during runs:
 | `CRONPLUS_TASK_DIR` | Package directory |
 | `CRONPLUS_RUN_DIR` | Per-run directory when isolation is enabled |
 | `CRONPLUS_BROWSER_USER_DATA_DIR` | Browser profile directory |
-| `CRONPLUS_BROWSER_DOWNLOADS_DIR` | Browser download directory |
-| `CRONPLUS_BROWSER_CACHE_DIR` | Browser cache directory |
+| `CRONPLUS_BROWSER_DOWNLOADS_DIR` | Browser download directory; empty when `downloads_mode: default` |
+| `CRONPLUS_BROWSER_CACHE_DIR` | Browser cache directory; empty when `cache_policy` is `default` or `disabled` |
+| `CRONPLUS_BROWSER_PROFILE_MODE` | Browser profile policy when `runtime.browser.enabled` is true |
+| `CRONPLUS_BROWSER_PROFILE_SOURCE` | Durable profile source for `copy_from` or `shared_external` |
+
+Use these browser policy defaults unless the user asks for another pattern:
+
+```yaml
+runtime:
+  browser:
+    enabled: true
+    profile_mode: isolated
+    downloads_mode: isolated
+    cache_policy: isolated
+    cleanup_policy: keep_on_failure
+```
+
+Choose `profile_mode: isolated` for clean one-shot runs, `copy_from` when cookies/localStorage from a durable profile are needed but each run should mutate only a copy, and `shared_external` when a separate browser-manager task owns a long-running visible browser. A failed `copy_from` profile copy stops the run before the script launches. For a shared browser manager, add a dependency from monitor tasks to the manager task with a freshness limit, for example `max_age_seconds: 3900`, and make the manager recycle only browsers it can identify by its configured profile path.
 
 ## Delivery Template Guidance
 

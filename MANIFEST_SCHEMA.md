@@ -33,6 +33,14 @@ runtime:
   max_output_kb: 512             # Truncate stdout/stderr. Default: 512
   env_file: ./.env               # Optional dotenv file, relative to manifest dir.
   isolated_run: true             # Default. Per-run HOME/TMP/cache/profile dirs.
+  browser:                       # Optional browser automation policy.
+    enabled: true
+    profile_mode: isolated       # "isolated" | "copy_from" | "shared_external"
+    profile_source: ./profile    # Required for copy_from/shared_external.
+    downloads_mode: isolated     # "isolated" | "default"
+    cache_policy: isolated       # "isolated" | "default" | "disabled"
+    cleanup_policy: keep_on_failure # "delete_on_success" | "delete_always" | "keep_on_failure" | "keep_always"
+    process_detection_hints: [Chromium, Chrome]
   resource_limits:
     graceful_kill_seconds: 5     # Default. TERM grace before KILL.
     max_open_files: 1024         # Optional best-effort ulimit.
@@ -107,6 +115,11 @@ result_contract:
 | `runtime.timeout_seconds` | Must be greater than 0 |
 | `runtime.max_output_kb` | Must be greater than 0 |
 | `runtime.env_file` | If present, must resolve to an existing file |
+| `runtime.browser.profile_mode` | If browser is enabled, must be `isolated`, `copy_from`, or `shared_external` |
+| `runtime.browser.profile_source` | Required for `copy_from` and `shared_external`; for `copy_from`, must resolve to a directory |
+| `runtime.browser.downloads_mode` | If browser is enabled, must be `isolated` or `default` |
+| `runtime.browser.cache_policy` | If browser is enabled, must be `isolated`, `default`, or `disabled` |
+| `runtime.browser.cleanup_policy` | If browser is enabled, must be `delete_on_success`, `delete_always`, `keep_on_failure`, or `keep_always` |
 | `runtime.env.*.type` | Must be `plain` or `secret`; `secret` currently supports `env://NAME` |
 | `runtime.resource_limits.graceful_kill_seconds` | Must be greater than 0 |
 | `runtime.resource_limits.*` | Optional hard limits must be greater than or equal to 0 |
@@ -127,6 +140,10 @@ result_contract:
 | `runtime.timeout_seconds` | `120` |
 | `runtime.max_output_kb` | `512` |
 | `runtime.isolated_run` | `true` |
+| `runtime.browser.profile_mode` | `isolated` when `runtime.browser.enabled` is `true` |
+| `runtime.browser.downloads_mode` | `isolated` when `runtime.browser.enabled` is `true` |
+| `runtime.browser.cache_policy` | `isolated` when `runtime.browser.enabled` is `true` |
+| `runtime.browser.cleanup_policy` | `delete_on_success` when `runtime.browser.enabled` is `true` |
 | `runtime.resource_limits.graceful_kill_seconds` | `5` |
 | `schedule.type` | `cron` |
 | `schedule.timezone` | `UTC` |
@@ -203,6 +220,25 @@ CronPlus also injects:
 | `CRONPLUS_BROWSER_CACHE_DIR` | Recommended browser cache directory |
 
 CronPlus starts each task in its own process group, kills remaining group members after the script exits or times out, scans for detached processes that still reference the run directory, and removes the run directory. Resource-limit fields are best-effort platform limits; process-tree cleanup is the primary protection.
+
+When `runtime.browser.enabled` is `true`, CronPlus records browser-specific diagnostics on each run: resolved profile, downloads, and cache paths; profile-copy status; cleanup policy; cleanup status; suspected leftover process count; and browser output bytes. The browser policy also controls the injected browser environment variables:
+
+| Policy | Behavior |
+|---|---|
+| `profile_mode: isolated` | Use the per-run profile directory. |
+| `profile_mode: copy_from` | Copy `profile_source` into the per-run profile directory before the script starts. If the copy fails, the run fails before the script launches. |
+| `profile_mode: shared_external` | Point browser profile variables at `profile_source`; CronPlus does not delete it. |
+| `downloads_mode: isolated` | Use the per-run downloads directory. |
+| `downloads_mode: default` | Leave `CRONPLUS_BROWSER_DOWNLOADS_DIR` empty so the script/browser uses its default. |
+| `cache_policy: isolated` | Use the per-run browser cache directory. |
+| `cache_policy: default` | Leave `CRONPLUS_BROWSER_CACHE_DIR` empty so the script/browser uses its default. |
+| `cache_policy: disabled` | Leave `CRONPLUS_BROWSER_CACHE_DIR` empty; the script should disable cache in the browser library if desired. |
+| `cleanup_policy: delete_on_success` | Remove the run directory after success; keep non-success runs for inspection. |
+| `cleanup_policy: delete_always` | Remove the run directory after every completed run. |
+| `cleanup_policy: keep_on_failure` | Keep the run directory for failed/warning/skipped runs so profile/download evidence can be inspected. |
+| `cleanup_policy: keep_always` | Keep the run directory until manually cleaned. |
+
+`process_detection_hints` are diagnostic metadata and are exposed to scripts as `CRONPLUS_BROWSER_PROCESS_HINTS`. CronPlus cleanup identifies ordinary child processes through process groups and isolated run-directory references; tasks that use `profile_mode: shared_external` should include their own conservative browser ownership checks before recycling a long-running browser.
 
 ## Inline Delivery Profiles
 

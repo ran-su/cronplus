@@ -100,13 +100,14 @@ cronplus (single Go binary)
 6. **Auth**: Auto-generated token at `~/.config/cronplus/auth-token`. Stable across upgrades.
 7. **Task Lifecycle**: Import registers a package, reload re-reads its manifest, remove import unregisters it without deleting package files.
 8. **Missed Runs**: Missed scheduled times are skipped; CronPlus does not backfill runs after downtime.
-9. **Resource Cleanup**: Each run uses its own process group and per-run temp/profile/cache directory. CronPlus kills leftover process-group members, scans for detached processes referencing the run directory, and removes run artifacts.
-10. **Diagnostics**: Runs record Python executable, script path, working directory, timeout, process IDs, output bytes/discards, run directory, cleanup results, and structured-result detection.
+9. **Resource Cleanup**: Each run uses its own process group and per-run temp/profile/cache directory. CronPlus kills leftover process-group members, scans for detached processes referencing the run directory, and removes run artifacts according to the task's cleanup policy.
+10. **Diagnostics**: Runs record Python executable, script path, working directory, timeout, process IDs, output bytes/discards, run directory, cleanup results, browser paths/profile-copy status when enabled, and structured-result detection.
 11. **Contract Checks**: CLI validation, schema output, and one-shot run checks help AI agents produce valid task packages before import. One-shot checks are diagnostic only; they do not write imported-task run history.
 12. **Task Dependencies**: Dependencies are checked against imported-task run history before a dependent task is marked running. Unhealthy dependencies create a normal completed run record with status `skipped` or `failure`, without launching the script or consuming an active-run slot. The API/UI/MCP can report all dependency checks and downstream dependents.
 13. **Schedule Preview**: Users can preview upcoming run times for a task or raw cron expression. Preview uses the manifest schedule helper and works for disabled tasks.
-14. **Health And Maintenance**: The health surface summarizes daemon metadata, task/run counts, active runs, recent failures, attention items, storage usage, and environment sizes.
-15. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`. MCP tools and resources mirror the request/response REST API surface where practical; the SSE-only event stream remains a web/API feature rather than an MCP tool.
+14. **Browser Automation**: Browser-enabled tasks declare profile mode, downloads mode, cache policy, cleanup policy, and process-detection hints in the manifest. CronPlus surfaces active browser runs, retained browser run directories, recent browser failures, and browser storage usage.
+15. **Health And Maintenance**: The health surface summarizes daemon metadata, task/run counts, active runs, browser automation health, recent failures, attention items, storage usage, and environment sizes.
+16. **MCP Integration**: MCP clients launch `cronplus mcp` as a long-lived stdio subprocess. That adapter does not own scheduler state; it resolves the local daemon, authenticates with the token file, and uses the REST API to reach the single `core.Engine`. MCP tools and resources mirror the request/response REST API surface where practical; the SSE-only event stream remains a web/API feature rather than an MCP tool.
 
 ## Distribution
 

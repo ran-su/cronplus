@@ -29,7 +29,7 @@ Three-step flow:
 | Run Detail | `/tasks/:id/runs/:runId` | stdout, stderr, parsed result, run diagnostics, resource cleanup, delivery outcomes |
 | Delivery | `/delivery` | Profile list, create/test/delete |
 | Commands | `/commands` | Inbound command log |
-| Health | `/health` | Daemon health, active runs with live output tails and cancel actions, run-history retention controls, storage usage, environment sizes, attention items |
+| Health | `/health` | Daemon health, active runs with live output tails and cancel actions, browser automation health, run-history retention controls, storage usage, environment sizes, attention items |
 | Settings | `/settings` | Token display, version info |
 
 ## REST API
@@ -93,7 +93,7 @@ The web UI also refreshes API state on a 30-second interval when no modal or inp
 - Run history filters for status, trigger, delivery state, and text search
 - Task environment card always shows strategy and reports managed/custom venv size when a venv path exists
 - Managed venv rebuild is available from task detail; custom venv paths are inspected but not deleted
-- Health page summarizes active runs, retention controls, storage usage, environment sizes, and attention items
+- Health page summarizes active runs, browser automation health, retention controls, storage usage, environment sizes, and attention items
 - Active-run rows show PID/process group, elapsed time, execution paths, run directory, stdout/stderr tails, and a cancel action
 - Retention controls bound completed run history by max runs per task, max age in days, and retained stdout/stderr KB per stream
 - Responsive (works on mobile)

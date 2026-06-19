@@ -199,6 +199,214 @@ print("CRONPLUS_RESULT=" + json.dumps({
 	waitForProcessExit(t, pid)
 }
 
+func TestRunScriptBrowserPolicyInjectsPathsAndCopiesProfile(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	dir := t.TempDir()
+	sourceProfile := filepath.Join(dir, "source-profile")
+	if err := os.MkdirAll(sourceProfile, 0700); err != nil {
+		t.Fatalf("create source profile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceProfile, "Cookies"), []byte("cookie-data"), 0600); err != nil {
+		t.Fatalf("write source profile: %v", err)
+	}
+	script := `import json, os
+profile = os.environ["CRONPLUS_BROWSER_USER_DATA_DIR"]
+downloads = os.environ["CRONPLUS_BROWSER_DOWNLOADS_DIR"]
+cache = os.environ["CRONPLUS_BROWSER_CACHE_DIR"]
+print("CRONPLUS_RESULT=" + json.dumps({
+  "status": "success",
+  "summary": str(os.path.exists(os.path.join(profile, "Cookies")) and downloads.startswith(os.environ["CRONPLUS_RUN_DIR"]) and cache.startswith(os.environ["CRONPLUS_RUN_DIR"])).lower()
+}))
+`
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	outcome := RunScript(&models.ScriptManifest{
+		Script: models.ScriptSection{Path: "./script.py"},
+		Runtime: models.RuntimeSection{
+			TimeoutSeconds: 5,
+			MaxOutputKB:    64,
+			Environment: models.EnvironmentConfig{
+				Strategy:          "system",
+				PythonInterpreter: python,
+			},
+			Browser: models.BrowserPolicy{
+				Enabled:       true,
+				ProfileMode:   "copy_from",
+				ProfileSource: sourceProfile,
+			},
+		},
+		ResultContract: models.ResultContract{ResultPrefix: "CRONPLUS_RESULT="},
+	}, dir)
+
+	if outcome.ParsedResult == nil || outcome.ParsedResult.Summary != "true" {
+		t.Fatalf("parsed result = %+v, want browser paths usable", outcome.ParsedResult)
+	}
+	if !outcome.Diagnostics.Browser.Enabled || !outcome.Diagnostics.Browser.ProfileCopied {
+		t.Fatalf("browser diagnostics = %+v, want copied profile", outcome.Diagnostics.Browser)
+	}
+	if outcome.Diagnostics.Browser.ProfilePath == "" || outcome.Diagnostics.Browser.DownloadPath == "" || outcome.Diagnostics.Browser.CachePath == "" {
+		t.Fatalf("browser paths missing: %+v", outcome.Diagnostics.Browser)
+	}
+	if outcome.Diagnostics.Browser.CleanupStatus == "cleanup_failed" || !outcome.Diagnostics.Cleanup.RunDirectoryRemoved {
+		t.Fatalf("cleanup diagnostics = browser:%+v cleanup:%+v", outcome.Diagnostics.Browser, outcome.Diagnostics.Cleanup)
+	}
+}
+
+func TestRunScriptBrowserPolicyCanRetainFailureDirectory(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	dir := t.TempDir()
+	script := `import json
+print("CRONPLUS_RESULT=" + json.dumps({"status": "failure", "summary": "keep"}))
+`
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	outcome := RunScript(&models.ScriptManifest{
+		Script: models.ScriptSection{Path: "./script.py"},
+		Runtime: models.RuntimeSection{
+			TimeoutSeconds: 5,
+			MaxOutputKB:    64,
+			Environment: models.EnvironmentConfig{
+				Strategy:          "system",
+				PythonInterpreter: python,
+			},
+			Browser: models.BrowserPolicy{
+				Enabled:       true,
+				CleanupPolicy: "keep_on_failure",
+			},
+		},
+		ResultContract: models.ResultContract{ResultPrefix: "CRONPLUS_RESULT="},
+	}, dir)
+
+	if !outcome.Diagnostics.Browser.RunDirectoryRetained {
+		t.Fatalf("browser diagnostics = %+v, want retained run dir", outcome.Diagnostics.Browser)
+	}
+	if _, err := os.Stat(outcome.Diagnostics.RunDirectory); err != nil {
+		t.Fatalf("retained run dir missing: %v", err)
+	}
+	if err := os.RemoveAll(outcome.Diagnostics.RunDirectory); err != nil {
+		t.Fatalf("cleanup retained run dir: %v", err)
+	}
+}
+
+func TestRunScriptBrowserPolicyDefaultModesUnsetBrowserPaths(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	dir := t.TempDir()
+	sourceProfile := filepath.Join(dir, "shared-profile")
+	if err := os.MkdirAll(sourceProfile, 0700); err != nil {
+		t.Fatalf("create shared profile: %v", err)
+	}
+	script := `import json, os
+print("CRONPLUS_RESULT=" + json.dumps({
+  "status": "success",
+  "summary": "|".join([
+    os.environ.get("CRONPLUS_BROWSER_USER_DATA_DIR", ""),
+    os.environ.get("CRONPLUS_BROWSER_DOWNLOADS_DIR", "<missing>"),
+    os.environ.get("CRONPLUS_BROWSER_CACHE_DIR", "<missing>")
+  ])
+}))
+`
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	outcome := RunScript(&models.ScriptManifest{
+		Script: models.ScriptSection{Path: "./script.py"},
+		Runtime: models.RuntimeSection{
+			TimeoutSeconds: 5,
+			MaxOutputKB:    64,
+			Environment: models.EnvironmentConfig{
+				Strategy:          "system",
+				PythonInterpreter: python,
+			},
+			Browser: models.BrowserPolicy{
+				Enabled:       true,
+				ProfileMode:   "shared_external",
+				ProfileSource: sourceProfile,
+				DownloadsMode: "default",
+				CachePolicy:   "disabled",
+			},
+		},
+		ResultContract: models.ResultContract{ResultPrefix: "CRONPLUS_RESULT="},
+	}, dir)
+
+	want := sourceProfile + "||"
+	if outcome.ParsedResult == nil || outcome.ParsedResult.Summary != want {
+		t.Fatalf("summary = %+v, want %q", outcome.ParsedResult, want)
+	}
+	if outcome.Diagnostics.Browser.DownloadPath != "" || outcome.Diagnostics.Browser.CachePath != "" {
+		t.Fatalf("browser diagnostics = %+v, want default paths empty", outcome.Diagnostics.Browser)
+	}
+}
+
+func TestRunScriptBrowserPolicyProfileCopyFailureDoesNotLaunchScript(t *testing.T) {
+	python, err := exec.LookPath("python3")
+	if err != nil {
+		t.Skip("python3 not available")
+	}
+
+	dir := t.TempDir()
+	missingProfile := filepath.Join(dir, "missing-profile")
+	marker := filepath.Join(dir, "script-launched")
+	script := `import os
+with open(os.environ["MARKER"], "w", encoding="utf-8") as f:
+    f.write("launched")
+print('CRONPLUS_RESULT={"status":"success","summary":"launched"}')
+`
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+
+	outcome := RunScript(&models.ScriptManifest{
+		Script: models.ScriptSection{Path: "./script.py"},
+		Runtime: models.RuntimeSection{
+			TimeoutSeconds: 5,
+			MaxOutputKB:    64,
+			Env: map[string]models.EnvVar{
+				"MARKER": {Type: "plain", Value: marker},
+			},
+			Environment: models.EnvironmentConfig{
+				Strategy:          "system",
+				PythonInterpreter: python,
+			},
+			Browser: models.BrowserPolicy{
+				Enabled:       true,
+				ProfileMode:   "copy_from",
+				ProfileSource: missingProfile,
+			},
+		},
+		ResultContract: models.ResultContract{ResultPrefix: "CRONPLUS_RESULT="},
+	}, dir)
+
+	if outcome.ExitCode != -1 || outcome.Diagnostics.Browser.ProfileCopyError == "" {
+		t.Fatalf("outcome = %+v, want launch failure with profile copy diagnostics", outcome)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("script marker exists or stat failed unexpectedly: %v", err)
+	}
+	if !outcome.Diagnostics.Browser.RunDirectoryRetained {
+		t.Fatalf("browser diagnostics = %+v, want retained directory for copy failure", outcome.Diagnostics.Browser)
+	}
+	if err := os.RemoveAll(outcome.Diagnostics.RunDirectory); err != nil {
+		t.Fatalf("cleanup retained run dir: %v", err)
+	}
+}
+
 func childPIDFromOutput(t *testing.T, output string) int {
 	t.Helper()
 	for _, line := range strings.Split(output, "\n") {

@@ -26,6 +26,7 @@ type RuntimeSection struct {
 	EnvFile        string            `yaml:"env_file" json:"envFile"`
 	Env            map[string]EnvVar `yaml:"env" json:"env"`
 	IsolatedRun    *bool             `yaml:"isolated_run" json:"isolatedRun,omitempty"`
+	Browser        BrowserPolicy     `yaml:"browser" json:"browser"`
 	ResourceLimits ResourceLimits    `yaml:"resource_limits" json:"resourceLimits"`
 }
 
@@ -53,6 +54,16 @@ type ResourceLimits struct {
 	MaxProcesses        int `yaml:"max_processes" json:"maxProcesses,omitempty"`
 	MaxCPUSeconds       int `yaml:"max_cpu_seconds" json:"maxCPUSeconds,omitempty"`
 	MaxMemoryMB         int `yaml:"max_memory_mb" json:"maxMemoryMB,omitempty"`
+}
+
+type BrowserPolicy struct {
+	Enabled               bool     `yaml:"enabled" json:"enabled"`
+	ProfileMode           string   `yaml:"profile_mode" json:"profileMode,omitempty"`
+	ProfileSource         string   `yaml:"profile_source" json:"profileSource,omitempty"`
+	DownloadsMode         string   `yaml:"downloads_mode" json:"downloadsMode,omitempty"`
+	CachePolicy           string   `yaml:"cache_policy" json:"cachePolicy,omitempty"`
+	CleanupPolicy         string   `yaml:"cleanup_policy" json:"cleanupPolicy,omitempty"`
+	ProcessDetectionHints []string `yaml:"process_detection_hints" json:"processDetectionHints,omitempty"`
 }
 
 func (r ResourceLimits) HasHardLimits() bool {
@@ -123,6 +134,20 @@ func (m *ScriptManifest) Defaults() {
 	}
 	if m.Runtime.Environment.Strategy == "" {
 		m.Runtime.Environment.Strategy = "system"
+	}
+	if m.Runtime.Browser.Enabled {
+		if m.Runtime.Browser.ProfileMode == "" {
+			m.Runtime.Browser.ProfileMode = "isolated"
+		}
+		if m.Runtime.Browser.DownloadsMode == "" {
+			m.Runtime.Browser.DownloadsMode = "isolated"
+		}
+		if m.Runtime.Browser.CachePolicy == "" {
+			m.Runtime.Browser.CachePolicy = "isolated"
+		}
+		if m.Runtime.Browser.CleanupPolicy == "" {
+			m.Runtime.Browser.CleanupPolicy = "delete_on_success"
+		}
 	}
 	if m.Schedule.Type == "" {
 		m.Schedule.Type = "cron"

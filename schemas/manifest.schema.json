@@ -55,6 +55,48 @@
         "max_output_kb": { "type": "integer", "minimum": 1 },
         "env_file": { "type": "string" },
         "isolated_run": { "type": "boolean" },
+        "browser": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean" },
+            "profile_mode": {
+              "type": "string",
+              "enum": ["isolated", "copy_from", "shared_external"]
+            },
+            "profile_source": { "type": "string" },
+            "downloads_mode": {
+              "type": "string",
+              "enum": ["isolated", "default"]
+            },
+            "cache_policy": {
+              "type": "string",
+              "enum": ["isolated", "default", "disabled"]
+            },
+            "cleanup_policy": {
+              "type": "string",
+              "enum": ["delete_on_success", "delete_always", "keep_on_failure", "keep_always"]
+            },
+            "process_detection_hints": {
+              "type": "array",
+              "items": { "type": "string", "minLength": 1 }
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "properties": {
+                  "enabled": { "const": true },
+                  "profile_mode": { "enum": ["copy_from", "shared_external"] }
+                },
+                "required": ["enabled", "profile_mode"]
+              },
+              "then": {
+                "required": ["profile_source"]
+              }
+            }
+          ]
+        },
         "resource_limits": {
           "type": "object",
           "additionalProperties": false,

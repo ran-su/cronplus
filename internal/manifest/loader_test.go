@@ -306,6 +306,66 @@ schedule:
 	}
 }
 
+func TestLoad_BrowserPolicyDefaults(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "script.py")
+	os.WriteFile(scriptPath, []byte("pass\n"), 0644)
+
+	manifestContent := `
+manifest_version: 1
+script:
+  path: ./script.py
+runtime:
+  browser:
+    enabled: true
+schedule:
+  expression: "0 * * * *"
+`
+	manifestPath := filepath.Join(dir, "test.cronplus.yaml")
+	os.WriteFile(manifestPath, []byte(manifestContent), 0644)
+
+	result, err := Load(manifestPath)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if result.HasErrors() {
+		t.Fatalf("manifest should not have errors: %+v", result.Issues)
+	}
+	browser := result.Manifest.Runtime.Browser
+	if browser.ProfileMode != "isolated" || browser.DownloadsMode != "isolated" || browser.CachePolicy != "isolated" || browser.CleanupPolicy != "delete_on_success" {
+		t.Fatalf("browser defaults = %+v", browser)
+	}
+}
+
+func TestLoad_BrowserPolicyRequiresProfileSourceForCopy(t *testing.T) {
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "script.py")
+	os.WriteFile(scriptPath, []byte("pass\n"), 0644)
+
+	manifestContent := `
+manifest_version: 1
+script:
+  path: ./script.py
+runtime:
+  browser:
+    enabled: true
+    profile_mode: copy_from
+schedule:
+  expression: "0 * * * *"
+`
+	manifestPath := filepath.Join(dir, "test.cronplus.yaml")
+	os.WriteFile(manifestPath, []byte(manifestContent), 0644)
+
+	result, err := Load(manifestPath)
+	if err != nil {
+		t.Fatalf("Load error: %v", err)
+	}
+	if !result.HasErrors() {
+		t.Fatal("manifest should have browser profile_source error")
+	}
+	assertIssuePath(t, result.Issues, "runtime.browser.profile_source")
+}
+
 func TestLoad_RuntimeEnvFileAndSecretReference(t *testing.T) {
 	dir := t.TempDir()
 	scriptPath := filepath.Join(dir, "script.py")

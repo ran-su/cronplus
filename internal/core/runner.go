@@ -57,9 +57,10 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		var err error
 		runDir, err = prepareRunDirectory(opts.TaskID, opts.RunID)
 		if err != nil {
-			return launchFailureOutcome(m, pythonExe, scriptPath, workingDir, runDir, fmt.Errorf("failed to prepare run directory: %w", err))
+			return launchFailureOutcome(m, manifestDir, pythonExe, scriptPath, workingDir, runDir, fmt.Errorf("failed to prepare run directory: %w", err))
 		}
 	}
+	browserDiagnostics, browserEnv := prepareBrowserRuntime(m, manifestDir, runDir)
 
 	diagnostics := models.RunDiagnostics{
 		PythonExecutable:    pythonExe,
@@ -72,26 +73,37 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		MaxOutputKB:         m.Runtime.MaxOutputKB,
 		RunDirectory:        runDir,
 		IsolatedRun:         isolatedRun,
+		Browser:             browserDiagnostics,
+	}
+	if diagnostics.Browser.ProfileCopyError != "" {
+		diagnostics.Browser.CleanupStatus = "profile_copy_failed"
+	}
+	if err := browserProfileCopyFailure(browserDiagnostics); err != nil {
+		return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, diagnostics.Browser, err)
 	}
 
 	cmd, limitMode := commandForRun(pythonExe, scriptPath, m.Runtime.ResourceLimits)
 	diagnostics.LimitMode = limitMode
 	cmd.Dir = workingDir
-	cmd.Env = applyEnvOverrides(buildEnv(m, manifestDir), runEnvironment(opts.TaskID, opts.RunID, manifestDir, runDir, isolatedRun))
+	runEnv := runEnvironment(opts.TaskID, opts.RunID, manifestDir, runDir, isolatedRun)
+	for key, value := range browserEnv {
+		runEnv[key] = value
+	}
+	cmd.Env = applyEnvOverrides(buildEnv(m, manifestDir), runEnv)
 	configureProcessGroup(cmd)
 
 	stdoutPipe, err := cmd.StdoutPipe()
 	if err != nil {
-		return launchFailureOutcome(m, pythonExe, scriptPath, workingDir, runDir, err)
+		return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, browserDiagnostics, err)
 	}
 	stderrPipe, err := cmd.StderrPipe()
 	if err != nil {
-		return launchFailureOutcome(m, pythonExe, scriptPath, workingDir, runDir, err)
+		return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, browserDiagnostics, err)
 	}
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
-		return launchFailureOutcome(m, pythonExe, scriptPath, workingDir, runDir, err)
+		return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, browserDiagnostics, err)
 	}
 	if opts.RegisterCancel != nil {
 		opts.RegisterCancel(opts.RunID, func(reason string) {
@@ -116,6 +128,7 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 			RootPID:             diagnostics.RootPID,
 			ProcessGroupID:      diagnostics.ProcessGroupID,
 			RunDirectory:        runDir,
+			Browser:             browserDiagnostics,
 			PythonExecutable:    pythonExe,
 			ScriptPath:          scriptPath,
 			WorkingDirectory:    workingDir,
@@ -185,11 +198,6 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		killed, scanErr := cleanupDetachedProcesses(runDir, grace)
 		diagnostics.Cleanup.DetachedProcessesKilled += killed
 		diagnostics.Cleanup.OrphanScanError = scanErr
-		if err := os.RemoveAll(runDir); err != nil {
-			diagnostics.Cleanup.RunDirectoryCleanupError = err.Error()
-		} else {
-			diagnostics.Cleanup.RunDirectoryRemoved = true
-		}
 	}
 
 	parsed := ParseResult(resultCapture.LastResultLine(), m.ResultContract.ResultPrefix)
@@ -243,6 +251,23 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		}
 		diagnostics.StructuredResultFound = true
 	}
+	statusForCleanup := models.RunStatusFromOutcome(models.RunOutcome{
+		ExitCode:     exitCode,
+		ParsedResult: parsed,
+		TimedOut:     timedOut,
+		Diagnostics:  diagnostics,
+	})
+	retainRunDir := finalizeBrowserDiagnostics(&diagnostics.Browser, statusForCleanup, diagnostics.StdoutBytes, diagnostics.StderrBytes, diagnostics.Cleanup)
+	if runDir != "" && !retainRunDir {
+		if err := os.RemoveAll(runDir); err != nil {
+			diagnostics.Cleanup.RunDirectoryCleanupError = err.Error()
+			if diagnostics.Browser.Enabled {
+				diagnostics.Browser.CleanupStatus = "cleanup_failed"
+			}
+		} else {
+			diagnostics.Cleanup.RunDirectoryRemoved = true
+		}
+	}
 
 	return &models.RunOutcome{
 		ExitCode:     exitCode,
@@ -279,9 +304,23 @@ func copyRunOutput(dst io.Writer, src io.Reader, runID, stream string, onOutput 
 	}
 }
 
-func launchFailureOutcome(m *models.ScriptManifest, pythonExe, scriptPath, workingDir, runDir string, err error) *models.RunOutcome {
-	if runDir != "" {
-		_ = os.RemoveAll(runDir)
+func launchFailureOutcome(m *models.ScriptManifest, manifestDir, pythonExe, scriptPath, workingDir, runDir string, err error) *models.RunOutcome {
+	browserDiagnostics, _ := prepareBrowserRuntime(m, manifestDir, runDir)
+	return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, browserDiagnostics, err)
+}
+
+func launchFailureOutcomeWithBrowser(m *models.ScriptManifest, pythonExe, scriptPath, workingDir, runDir string, browserDiagnostics models.BrowserRunDiagnostics, err error) *models.RunOutcome {
+	cleanup := models.RunCleanupDiagnostics{}
+	retainRunDir := finalizeBrowserDiagnostics(&browserDiagnostics, "failure", 0, 0, cleanup)
+	if runDir != "" && !retainRunDir {
+		if removeErr := os.RemoveAll(runDir); removeErr != nil {
+			cleanup.RunDirectoryCleanupError = removeErr.Error()
+			if browserDiagnostics.Enabled {
+				browserDiagnostics.CleanupStatus = "cleanup_failed"
+			}
+		} else {
+			cleanup.RunDirectoryRemoved = true
+		}
 	}
 	return &models.RunOutcome{
 		ExitCode: -1,
@@ -297,6 +336,8 @@ func launchFailureOutcome(m *models.ScriptManifest, pythonExe, scriptPath, worki
 			MaxOutputKB:         m.Runtime.MaxOutputKB,
 			RunDirectory:        runDir,
 			IsolatedRun:         m.RunIsolationEnabled(),
+			Browser:             browserDiagnostics,
+			Cleanup:             cleanup,
 		},
 	}
 }

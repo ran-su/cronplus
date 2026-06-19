@@ -268,6 +268,7 @@ func validate(m *models.ScriptManifest, dir string) []ValidationIssue {
 			})
 		}
 	}
+	issues = append(issues, validateBrowserPolicy(m, dir)...)
 	for name, envVar := range m.Runtime.Env {
 		if envVar.Type != "plain" && envVar.Type != "secret" {
 			issues = append(issues, ValidationIssue{
@@ -358,6 +359,105 @@ func validate(m *models.ScriptManifest, dir string) []ValidationIssue {
 	}
 
 	return issues
+}
+
+func validateBrowserPolicy(m *models.ScriptManifest, dir string) []ValidationIssue {
+	if !m.Runtime.Browser.Enabled {
+		return nil
+	}
+	var issues []ValidationIssue
+	validProfileModes := map[string]bool{
+		"isolated":        true,
+		"copy_from":       true,
+		"shared_external": true,
+	}
+	if !validProfileModes[m.Runtime.Browser.ProfileMode] {
+		issues = append(issues, ValidationIssue{
+			Severity: "error",
+			Path:     "runtime.browser.profile_mode",
+			Message:  "Must be isolated, copy_from, or shared_external.",
+		})
+	}
+	if !m.RunIsolationEnabled() && browserPolicyNeedsRunDirectory(m.Runtime.Browser) {
+		issues = append(issues, ValidationIssue{
+			Severity: "error",
+			Path:     "runtime.isolated_run",
+			Message:  "Browser policies that use isolated profile, downloads, or cache paths require isolated_run to remain enabled.",
+		})
+	}
+	if m.Runtime.Browser.ProfileMode == "copy_from" || m.Runtime.Browser.ProfileMode == "shared_external" {
+		if strings.TrimSpace(m.Runtime.Browser.ProfileSource) == "" {
+			issues = append(issues, ValidationIssue{
+				Severity: "error",
+				Path:     "runtime.browser.profile_source",
+				Message:  "Required when profile_mode is copy_from or shared_external.",
+			})
+		} else if m.Runtime.Browser.ProfileMode == "copy_from" {
+			resolved := resolvePath(dir, m.Runtime.Browser.ProfileSource)
+			info, err := os.Stat(resolved)
+			if err != nil {
+				message := fmt.Sprintf("Directory not found: %s", resolved)
+				if !os.IsNotExist(err) {
+					message = fmt.Sprintf("Cannot inspect directory: %s: %v", resolved, err)
+				}
+				issues = append(issues, ValidationIssue{
+					Severity: "error",
+					Path:     "runtime.browser.profile_source",
+					Message:  message,
+				})
+			} else if !info.IsDir() {
+				issues = append(issues, ValidationIssue{
+					Severity: "error",
+					Path:     "runtime.browser.profile_source",
+					Message:  fmt.Sprintf("Must be a directory: %s", resolved),
+				})
+			}
+		}
+	}
+	validDownloadsModes := map[string]bool{
+		"isolated": true,
+		"default":  true,
+	}
+	if !validDownloadsModes[m.Runtime.Browser.DownloadsMode] {
+		issues = append(issues, ValidationIssue{
+			Severity: "error",
+			Path:     "runtime.browser.downloads_mode",
+			Message:  "Must be isolated or default.",
+		})
+	}
+	validCachePolicies := map[string]bool{
+		"isolated": true,
+		"default":  true,
+		"disabled": true,
+	}
+	if !validCachePolicies[m.Runtime.Browser.CachePolicy] {
+		issues = append(issues, ValidationIssue{
+			Severity: "error",
+			Path:     "runtime.browser.cache_policy",
+			Message:  "Must be isolated, default, or disabled.",
+		})
+	}
+	validCleanupPolicies := map[string]bool{
+		"delete_on_success": true,
+		"delete_always":     true,
+		"keep_on_failure":   true,
+		"keep_always":       true,
+	}
+	if !validCleanupPolicies[m.Runtime.Browser.CleanupPolicy] {
+		issues = append(issues, ValidationIssue{
+			Severity: "error",
+			Path:     "runtime.browser.cleanup_policy",
+			Message:  "Must be delete_on_success, delete_always, keep_on_failure, or keep_always.",
+		})
+	}
+	return issues
+}
+
+func browserPolicyNeedsRunDirectory(policy models.BrowserPolicy) bool {
+	return policy.ProfileMode == "isolated" ||
+		policy.ProfileMode == "copy_from" ||
+		policy.DownloadsMode == "isolated" ||
+		policy.CachePolicy == "isolated"
 }
 
 func validateCronExpression(expr string) error {

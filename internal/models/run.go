@@ -31,6 +31,7 @@ type RunDiagnostics struct {
 	ProcessGroupID        int                   `json:"processGroupID,omitempty"`
 	RunDirectory          string                `json:"runDirectory,omitempty"`
 	IsolatedRun           bool                  `json:"isolatedRun"`
+	Browser               BrowserRunDiagnostics `json:"browser,omitempty"`
 	StdoutBytes           int64                 `json:"stdoutBytes"`
 	StderrBytes           int64                 `json:"stderrBytes"`
 	StdoutTruncated       bool                  `json:"stdoutTruncated"`
@@ -46,6 +47,26 @@ type RunDiagnostics struct {
 	Cleanup               RunCleanupDiagnostics `json:"cleanup"`
 }
 
+type BrowserRunDiagnostics struct {
+	Enabled                     bool     `json:"enabled,omitempty"`
+	ProfileMode                 string   `json:"profileMode,omitempty"`
+	ProfileSource               string   `json:"profileSource,omitempty"`
+	ProfilePath                 string   `json:"profilePath,omitempty"`
+	DownloadPath                string   `json:"downloadPath,omitempty"`
+	CachePath                   string   `json:"cachePath,omitempty"`
+	DownloadsMode               string   `json:"downloadsMode,omitempty"`
+	CachePolicy                 string   `json:"cachePolicy,omitempty"`
+	CleanupPolicy               string   `json:"cleanupPolicy,omitempty"`
+	ProfileCopied               bool     `json:"profileCopied,omitempty"`
+	ProfileCopyError            string   `json:"profileCopyError,omitempty"`
+	CleanupStatus               string   `json:"cleanupStatus,omitempty"`
+	SuspectedLeftoverProcesses  int      `json:"suspectedLeftoverProcesses,omitempty"`
+	ProcessDetectionHints       []string `json:"processDetectionHints,omitempty"`
+	OutputBytes                 int64    `json:"outputBytes,omitempty"`
+	RunDirectoryRetained        bool     `json:"runDirectoryRetained,omitempty"`
+	RunDirectoryRetentionReason string   `json:"runDirectoryRetentionReason,omitempty"`
+}
+
 type RunCleanupDiagnostics struct {
 	ProcessGroupTerminated   bool   `json:"processGroupTerminated"`
 	ProcessGroupForceKilled  bool   `json:"processGroupForceKilled"`
@@ -56,27 +77,28 @@ type RunCleanupDiagnostics struct {
 }
 
 type ActiveRunInfo struct {
-	TaskID              string     `json:"taskID"`
-	TaskName            string     `json:"taskName,omitempty"`
-	TaskSlug            string     `json:"taskSlug,omitempty"`
-	RunID               string     `json:"runID"`
-	Trigger             string     `json:"trigger,omitempty"`
-	RootPID             int        `json:"rootPID"`
-	ProcessGroupID      int        `json:"processGroupID"`
-	RunDirectory        string     `json:"runDirectory"`
-	PythonExecutable    string     `json:"pythonExecutable,omitempty"`
-	ScriptPath          string     `json:"scriptPath,omitempty"`
-	WorkingDirectory    string     `json:"workingDirectory,omitempty"`
-	EnvironmentStrategy string     `json:"environmentStrategy,omitempty"`
-	TimeoutSeconds      int        `json:"timeoutSeconds,omitempty"`
-	MaxOutputKB         int        `json:"maxOutputKB,omitempty"`
-	StartedAt           time.Time  `json:"startedAt"`
-	ElapsedMs           int64      `json:"elapsedMs,omitempty"`
-	CancelRequested     bool       `json:"cancelRequested,omitempty"`
-	CancelReason        string     `json:"cancelReason,omitempty"`
-	CancelRequestedAt   *time.Time `json:"cancelRequestedAt,omitempty"`
-	StdoutTail          string     `json:"stdoutTail,omitempty"`
-	StderrTail          string     `json:"stderrTail,omitempty"`
+	TaskID              string                `json:"taskID"`
+	TaskName            string                `json:"taskName,omitempty"`
+	TaskSlug            string                `json:"taskSlug,omitempty"`
+	RunID               string                `json:"runID"`
+	Trigger             string                `json:"trigger,omitempty"`
+	RootPID             int                   `json:"rootPID"`
+	ProcessGroupID      int                   `json:"processGroupID"`
+	RunDirectory        string                `json:"runDirectory"`
+	Browser             BrowserRunDiagnostics `json:"browser,omitempty"`
+	PythonExecutable    string                `json:"pythonExecutable,omitempty"`
+	ScriptPath          string                `json:"scriptPath,omitempty"`
+	WorkingDirectory    string                `json:"workingDirectory,omitempty"`
+	EnvironmentStrategy string                `json:"environmentStrategy,omitempty"`
+	TimeoutSeconds      int                   `json:"timeoutSeconds,omitempty"`
+	MaxOutputKB         int                   `json:"maxOutputKB,omitempty"`
+	StartedAt           time.Time             `json:"startedAt"`
+	ElapsedMs           int64                 `json:"elapsedMs,omitempty"`
+	CancelRequested     bool                  `json:"cancelRequested,omitempty"`
+	CancelReason        string                `json:"cancelReason,omitempty"`
+	CancelRequestedAt   *time.Time            `json:"cancelRequestedAt,omitempty"`
+	StdoutTail          string                `json:"stdoutTail,omitempty"`
+	StderrTail          string                `json:"stderrTail,omitempty"`
 }
 
 // ParsedResult is the structured data extracted from CRONPLUS_RESULT=<json>.

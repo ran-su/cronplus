@@ -200,6 +200,8 @@ func runCLICommand(args []string) (bool, int) {
 		return true, 0
 	case "autostart":
 		return true, cliAutostart(args[1:])
+	case "update":
+		return true, cliUpdate(args[1:])
 	case "mcp":
 		return true, cliMCP(args[1:])
 	case "status", "list":

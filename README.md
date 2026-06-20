@@ -317,7 +317,7 @@ For imported tasks, use `cronplus.runs.start` to create real run history and `cr
 | **Contract Checks** | CLI validation and run checks for AI-authored packages |
 | **MCP** | Local stdio MCP adapter for AI clients |
 | **Autostart** | macOS LaunchAgent install/status/uninstall command |
-| **Persistence** | SQLite state at `~/.config/cronplus/state.db` with automatic legacy JSON import |
+| **Persistence** | SQLite state at `~/.config/cronplus/state.db` |
 | **Auth** | Token file, auto-auth for localhost |
 | **Single Binary** | Web UI embedded via `go:embed` |
 
@@ -479,7 +479,14 @@ All data stored in `~/.config/cronplus/`:
 | `auth-token` | API authentication token (stable across upgrades) |
 | `daemon.lock` | Single-daemon lock with current PID, port, and start time |
 | `state.db` | SQLite state database for imported tasks, profiles, settings, commands, and run history |
-| `state.json` | Legacy JSON state file, imported once into `state.db` when present |
+
+### v2.0 Upgrade Note
+
+CronPlus v2.0 and later read `state.db` only. The legacy `state.json` import path was removed as a breaking change.
+
+If you are upgrading from a JSON-state release and do not already have `~/.config/cronplus/state.db`, upgrade to the latest v1.x release first and start CronPlus once. That v1.x startup creates `state.db` from `state.json`. After confirming your tasks, delivery profiles, and app settings are visible, upgrade to v2.0 or later.
+
+If v2.0 starts with only `state.json` present and no `state.db`, it treats the install as a fresh state.
 
 ## License
 

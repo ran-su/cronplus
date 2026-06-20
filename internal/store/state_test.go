@@ -9,26 +9,16 @@ import (
 	"github.com/ran-su/cronplus/internal/models"
 )
 
-func TestLoadImportsLegacyJSONIntoSQLite(t *testing.T) {
+func TestLoadIgnoresLegacyJSONWhenSQLiteIsMissing(t *testing.T) {
 	dir := t.TempDir()
 	jsonPath := filepath.Join(dir, "state.json")
 	dbPath := filepath.Join(dir, "state.db")
-	legacy := `{
-  "tasks": [
-    {"id": "task-enabled", "packageDir": "/tmp/enabled"},
-    {"id": "task-disabled", "packageDir": "/tmp/disabled", "enabled": false}
-  ],
-  "deliveryProfiles": [
-    {"name": "Main Telegram", "config": {"bot_token": "token", "chat_id": "1"}},
-    {"id": "explicit", "name": "Explicit", "driverType": "telegram", "enabled": false}
-  ],
-  "settings": {"webServerPort": 9987, "webServerBind": "0.0.0.0"}
-}`
+	legacy := `{"tasks":[{"id":"legacy-task","packageDir":"/tmp/legacy"}],"settings":{"webServerPort":9987}}`
 	if err := os.WriteFile(jsonPath, []byte(legacy), 0600); err != nil {
 		t.Fatalf("write legacy state: %v", err)
 	}
 
-	st := New(jsonPath)
+	st := New(dbPath)
 	state, err := st.Load()
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -37,92 +27,22 @@ func TestLoadImportsLegacyJSONIntoSQLite(t *testing.T) {
 	if st.Path() != dbPath {
 		t.Fatalf("store path = %q, want %q", st.Path(), dbPath)
 	}
-	if _, err := os.Stat(dbPath); err != nil {
-		t.Fatalf("SQLite state was not created: %v", err)
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("SQLite state should not be created by read-only load, err=%v", err)
 	}
-	if _, err := os.Stat(jsonPath + ".bak"); err != nil {
-		t.Fatalf("legacy JSON backup missing: %v", err)
+	if _, err := os.Stat(jsonPath + ".bak"); !os.IsNotExist(err) {
+		t.Fatalf("legacy JSON backup should not be created, err=%v", err)
 	}
-
-	if len(state.Tasks) != 2 {
-		t.Fatalf("tasks len = %d, want 2", len(state.Tasks))
+	if len(state.Tasks) != 0 || len(state.DeliveryProfiles) != 0 || len(state.RunHistory) != 0 {
+		t.Fatalf("state = %+v, want empty SQLite state; legacy JSON must be ignored", state)
 	}
-	if !state.Tasks[0].Enabled {
-		t.Fatal("missing legacy task enabled flag was not defaulted to true")
-	}
-	if state.Tasks[1].Enabled {
-		t.Fatal("explicit disabled legacy task was not preserved")
-	}
-
-	if len(state.DeliveryProfiles) != 2 {
-		t.Fatalf("profiles len = %d, want 2", len(state.DeliveryProfiles))
-	}
-	firstProfile := state.DeliveryProfiles[0]
-	if firstProfile.ID != "main-telegram" {
-		t.Fatalf("generated profile id = %q, want main-telegram", firstProfile.ID)
-	}
-	if firstProfile.DriverType != "telegram" {
-		t.Fatalf("driver type = %q, want telegram", firstProfile.DriverType)
-	}
-	if !firstProfile.Enabled {
-		t.Fatal("missing legacy profile enabled flag was not defaulted to true")
-	}
-	if firstProfile.Config["bot_token"] != "token" || firstProfile.Config["chat_id"] != "1" {
-		t.Fatalf("profile config = %+v, want preserved telegram config", firstProfile.Config)
-	}
-	if state.DeliveryProfiles[1].Enabled {
-		t.Fatal("explicit disabled legacy profile was not preserved")
-	}
-	if state.Settings.WebServerPort != 9987 || state.Settings.WebServerBind != "0.0.0.0" {
-		t.Fatalf("settings = %+v, want preserved app config", state.Settings)
-	}
-
-	if err := os.WriteFile(jsonPath, []byte(`{"tasks":[{"id":"json-change","packageDir":"/tmp/json-change"}]}`), 0600); err != nil {
-		t.Fatalf("rewrite legacy JSON: %v", err)
-	}
-	fromDB, err := st.Load()
-	if err != nil {
-		t.Fatalf("Load from SQLite: %v", err)
-	}
-	if len(fromDB.Tasks) != 2 || fromDB.Tasks[0].ID != "task-enabled" {
-		t.Fatalf("state was reimported from JSON instead of SQLite: %+v", fromDB.Tasks)
-	}
-}
-
-func TestLegacyImportKeepsCoreStateWhenHistoryIsInvalid(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "state.json")
-	legacy := `{
-  "tasks": [{"id": "task-1", "packageDir": "/tmp/task-1"}],
-  "deliveryProfiles": [{"id": "telegram", "name": "Telegram", "driverType": "telegram", "config": {"bot_token": "token", "chat_id": "1"}}],
-  "settings": {"webServerPort": 9988, "webServerBind": "0.0.0.0"},
-  "runHistory": "not importable history",
-  "activeRuns": "not importable active runs",
-  "commandLog": "not importable command log"
-}`
-	if err := os.WriteFile(statePath, []byte(legacy), 0600); err != nil {
-		t.Fatalf("write legacy state: %v", err)
-	}
-
-	got, err := New(statePath).Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if len(got.Tasks) != 1 || got.Tasks[0].ID != "task-1" || !got.Tasks[0].Enabled {
-		t.Fatalf("tasks = %+v, want imported task with default enabled", got.Tasks)
-	}
-	if len(got.DeliveryProfiles) != 1 || got.DeliveryProfiles[0].Config["bot_token"] != "token" {
-		t.Fatalf("profiles = %+v, want imported delivery config", got.DeliveryProfiles)
-	}
-	if got.Settings.WebServerPort != 9988 || got.Settings.WebServerBind != "0.0.0.0" {
-		t.Fatalf("settings = %+v, want imported app config", got.Settings)
-	}
-	if len(got.RunHistory) != 0 || len(got.ActiveRuns) != 0 || len(got.CommandLog) != 0 {
-		t.Fatalf("best-effort fields = history:%+v active:%+v commands:%+v, want skipped invalid data", got.RunHistory, got.ActiveRuns, got.CommandLog)
+	if state.Settings.WebServerPort != 9876 || state.Settings.WebServerBind != "127.0.0.1" {
+		t.Fatalf("settings = %+v, want defaults", state.Settings)
 	}
 }
 
 func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	statePath := filepath.Join(t.TempDir(), "state.db")
 	st := New(statePath)
 	startedAt := time.Date(2026, 6, 14, 10, 30, 0, 0, time.UTC)
 	finishedAt := startedAt.Add(2 * time.Second)
@@ -172,9 +92,6 @@ func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(filepath.Dir(statePath), "state.db")); err != nil {
 		t.Fatalf("SQLite state missing after save: %v", err)
 	}
-	if _, err := os.Stat(statePath); !os.IsNotExist(err) {
-		t.Fatalf("legacy JSON state should not be written on SQLite save, err=%v", err)
-	}
 
 	got, err := st.Load()
 	if err != nil {
@@ -205,7 +122,7 @@ func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
 }
 
 func TestSQLiteActiveRunColumnMigrationLoadsOldRows(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	statePath := filepath.Join(t.TempDir(), "state.db")
 	st := New(statePath)
 	db, err := st.openSQLiteLocked()
 	if err != nil {
@@ -250,7 +167,7 @@ func TestSQLiteActiveRunColumnMigrationLoadsOldRows(t *testing.T) {
 }
 
 func TestSQLiteLoadsStoredRunStatusWithoutParsedResult(t *testing.T) {
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	statePath := filepath.Join(t.TempDir(), "state.db")
 	st := New(statePath)
 	if err := st.Save(&State{
 		Tasks: []PersistedTask{{ID: "task-1", PackageDir: "/tmp/task-1", Enabled: true}},

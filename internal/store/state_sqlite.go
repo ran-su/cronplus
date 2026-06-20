@@ -17,19 +17,6 @@ const sqliteStateUserVersion = 1
 
 func (s *Store) loadSQLiteLocked() (*State, error) {
 	if _, err := os.Stat(s.dbPath); os.IsNotExist(err) {
-		if _, jsonErr := os.Stat(s.jsonPath); jsonErr == nil {
-			state, err := s.loadJSONForImportLocked()
-			if err != nil {
-				return nil, err
-			}
-			normalizeState(state)
-			if err := s.saveSQLiteLocked(state); err != nil {
-				return nil, fmt.Errorf("failed to import legacy JSON state into SQLite: %w", err)
-			}
-			return state, nil
-		} else if jsonErr != nil && !os.IsNotExist(jsonErr) {
-			return nil, fmt.Errorf("failed to inspect legacy JSON state: %w", jsonErr)
-		}
 		return s.defaultState(), nil
 	} else if err != nil {
 		return nil, fmt.Errorf("failed to inspect SQLite state: %w", err)

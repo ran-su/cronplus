@@ -17,7 +17,7 @@ import (
 
 func TestRestoreStatePreservesTaskIDAndHistory(t *testing.T) {
 	dir := writeTaskPackage(t, "print('ok')\n", "")
-	statePath := filepath.Join(t.TempDir(), "state.json")
+	statePath := filepath.Join(t.TempDir(), "state.db")
 	st := store.New(statePath)
 
 	err := st.Save(&store.State{
@@ -53,7 +53,7 @@ func TestRestoreStatePreservesTaskIDAndHistory(t *testing.T) {
 
 func TestReloadTaskPreservesIDAndHistory(t *testing.T) {
 	dir := writeTaskPackage(t, "print('ok')\n", "")
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -108,7 +108,7 @@ func TestImportTaskCanonicalizesPackageDirAndDeduplicates(t *testing.T) {
 		t.Fatalf("relative task dir: %v", err)
 	}
 
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	t.Chdir(parent)
 
 	task, err := engine.ImportTask(relativeDir, true)
@@ -172,7 +172,7 @@ schedule:
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask should return immediately: %v", err)
@@ -196,7 +196,7 @@ func TestReloadManagedVenvTaskWhileRunActiveRecordsRun(t *testing.T) {
 
 	script := "import time\nprint('starting')\ntime.sleep(1)\nprint('done')\n"
 	dir := writeTaskPackage(t, script, python)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	engine.environmentSetupFunc = func(*models.ScriptManifest, string) error { return nil }
 
 	task, err := engine.ImportTask(dir, true)
@@ -256,7 +256,7 @@ func TestCancelRunRecordsCanceledHistory(t *testing.T) {
 		t.Skip("python3 not available")
 	}
 	dir := writeTaskPackage(t, "import time\nprint('started', flush=True)\ntime.sleep(10)\n", python)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -304,7 +304,7 @@ func TestCancelRunRecordsCanceledHistory(t *testing.T) {
 }
 
 func TestRunRetentionPrunesCountAndOutput(t *testing.T) {
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	taskID := "task-1"
 	now := time.Now()
 	engine.runHistory[taskID] = []models.RunRecord{
@@ -340,7 +340,7 @@ func TestRunRetentionPrunesCountAndOutput(t *testing.T) {
 
 func TestEnvironmentSetupSerializesAndSkipsStaleQueuedReload(t *testing.T) {
 	dir := writeManagedVenvTaskPackage(t)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 
 	var mu sync.Mutex
 	activeSetups := 0
@@ -402,7 +402,7 @@ func TestStartTaskRunRejectsAlreadyRunning(t *testing.T) {
 
 	script := "import time\nprint('starting')\ntime.sleep(1)\nprint('done')\n"
 	dir := writeTaskPackage(t, script, python)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -429,7 +429,7 @@ func TestRunTaskSkipsWhenDependencyMissing(t *testing.T) {
   tasks:
     - id: missing-task
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -458,7 +458,7 @@ func TestRunTaskDependencySkipDoesNotStartRun(t *testing.T) {
   tasks:
     - id: missing-task
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -505,7 +505,7 @@ func TestRunTaskDependencySkipDoesNotConsumeGlobalConcurrency(t *testing.T) {
   tasks:
     - id: missing-task
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	engine.maxConcurrentRuns = 1
 	activeTask, err := engine.ImportTask(activeDir, true)
 	if err != nil {
@@ -537,7 +537,7 @@ func TestRunTaskDependencySkipSatisfiesStructuredResultContract(t *testing.T) {
 result_contract:
   expect_structured_result: true
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -565,7 +565,7 @@ func TestRunTaskSkipsWhenDependencyHasNoHistory(t *testing.T) {
   tasks:
     - slug: browser-manager
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	if _, err := engine.ImportTask(managerDir, true); err != nil {
 		t.Fatalf("ImportTask manager: %v", err)
 	}
@@ -598,7 +598,7 @@ func TestRunTaskRunsWhenDependencyFreshSuccess(t *testing.T) {
     - slug: browser-manager
       max_age_seconds: 3900
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	manager, err := engine.ImportTask(managerDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask manager: %v", err)
@@ -633,7 +633,7 @@ func TestRunTaskSkipsWhenDependencyIsStale(t *testing.T) {
     - slug: browser-manager
       max_age_seconds: 60
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	manager, err := engine.ImportTask(managerDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask manager: %v", err)
@@ -669,7 +669,7 @@ func TestRunTaskFailsWhenDependencyUnhealthyPolicyIsFail(t *testing.T) {
       require_status: success
       on_unhealthy: fail
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	manager, err := engine.ImportTask(managerDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask manager: %v", err)
@@ -710,7 +710,7 @@ func TestDependencyHealthReportsAllDependencies(t *testing.T) {
     - slug: fresh-manager
       max_age_seconds: 3600
 `)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	stale, err := engine.ImportTask(managerDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask stale manager: %v", err)
@@ -761,7 +761,7 @@ func TestRebuildTaskEnvironmentRemovesManagedVenvAndRunsSetup(t *testing.T) {
 		t.Fatalf("write old env file: %v", err)
 	}
 
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	setupCalls := 0
 	engine.environmentSetupFunc = func(*models.ScriptManifest, string) error {
 		setupCalls++
@@ -810,7 +810,7 @@ func TestRemoveTaskTerminatesActiveRunAndSkipsHistory(t *testing.T) {
 
 	script := "import pathlib, time\npathlib.Path('started.txt').write_text('started')\ntime.sleep(30)\n"
 	dir := writeTaskPackage(t, script, python)
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -839,7 +839,7 @@ func TestRemoveTaskTerminatesActiveRunAndSkipsHistory(t *testing.T) {
 
 func TestEngineQueriesReturnCopies(t *testing.T) {
 	dir := writeTaskPackage(t, "print('ok')\n", "")
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -885,7 +885,7 @@ func TestEngineQueriesReturnCopies(t *testing.T) {
 }
 
 func TestAddDeliveryProfileUsesNameSlugID(t *testing.T) {
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 
 	id := engine.AddDeliveryProfile(models.DeliveryProfile{
 		Name:       "My Telegram",
@@ -907,7 +907,7 @@ func TestAddDeliveryProfileUsesNameSlugID(t *testing.T) {
 }
 
 func TestAddDeliveryProfileMakesExplicitDuplicateIDUnique(t *testing.T) {
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 
 	id := engine.AddDeliveryProfile(models.DeliveryProfile{
 		ID:         "telegram",
@@ -936,7 +936,7 @@ func TestAddDeliveryProfileMakesExplicitDuplicateIDUnique(t *testing.T) {
 }
 
 func TestUpdateDeliveryProfilePreservesExistingSecrets(t *testing.T) {
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	id := engine.AddDeliveryProfile(models.DeliveryProfile{
 		ID:                     "telegram",
 		Name:                   "Old",
@@ -976,7 +976,7 @@ func TestUpdateDeliveryProfilePreservesExistingSecrets(t *testing.T) {
 
 func TestAttachedSchedulerPrimesImportedTaskCurrentMinute(t *testing.T) {
 	dir := writeTaskPackage(t, "print('ok')\n", "")
-	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	scheduler := NewScheduler(engine)
 	engine.SetScheduler(scheduler)
 

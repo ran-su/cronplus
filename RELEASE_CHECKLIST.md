@@ -10,7 +10,7 @@ Run from the repository root:
 git diff --check
 CGO_ENABLED=0 go test ./...
 CGO_ENABLED=0 go vet ./...
-CGO_ENABLED=0 go test -race ./internal/core ./internal/api ./internal/inbound ./internal/delivery ./internal/manifest
+go test -race ./internal/core ./internal/api ./internal/inbound ./internal/delivery ./internal/manifest
 ```
 
 Confirm release builds still work without CGO:
@@ -25,12 +25,14 @@ CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/cronplus-darwin-arm64 .
 
 1. Start CronPlus with an existing config directory that contains imported tasks and delivery profiles.
 2. Confirm `state.db` is created or opened successfully.
-3. If a legacy `state.json` is present, confirm tasks, delivery profiles, app settings, and recent usable run history are visible after startup.
-4. On macOS, run `make install`, then confirm `command -v cronplus` points at the installed stable binary and `cronplus --help` does not execute a shell wrapper or temporary installer path.
-5. Run `cronplus update --dry-run` and confirm it selects the current OS/arch release asset and stable install path.
-6. Run `cronplus autostart install --no-start` from the stable binary and confirm the generated LaunchAgent points at that binary.
-7. Run negative autostart checks with `--path` values for a temporary build path, a shell launcher wrapper, and a non-executable file; confirm each is rejected.
-8. Open the web UI and confirm Dashboard, Tasks, Delivery, Commands, Health, and Settings load without API errors.
+3. Confirm v2.0 upgrade notes clearly state that JSON-only users must run the latest v1.x once before upgrading.
+4. With an existing `state.db`, confirm tasks, delivery profiles, app settings, command log, and recent usable run history are visible after startup.
+5. With only a legacy `state.json` and no `state.db`, confirm v2.0 starts as fresh state and does not import or mutate the JSON file.
+6. On macOS, run `make install`, then confirm `command -v cronplus` points at the installed stable binary and `cronplus --help` does not execute a shell wrapper or temporary installer path.
+7. Run `cronplus update --dry-run` and confirm it selects the current OS/arch release asset and stable install path.
+8. Run `cronplus autostart install --no-start` from the stable binary and confirm the generated LaunchAgent points at that binary.
+9. Run negative autostart checks with `--path` values for a temporary build path, a shell launcher wrapper, and a non-executable file; confirm each is rejected.
+10. Open the web UI and confirm Dashboard, Tasks, Delivery, Commands, Health, and Settings load without API errors.
 
 ## Task Lifecycle Smoke
 

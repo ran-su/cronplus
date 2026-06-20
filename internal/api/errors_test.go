@@ -41,7 +41,7 @@ schedule:
 		t.Fatalf("write manifest: %v", err)
 	}
 
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -73,7 +73,7 @@ func TestRunTaskRejectsPendingEnvironmentSetup(t *testing.T) {
 	}
 	writeManagedEnvTaskPackage(t, pendingDir, slowPython)
 
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(pendingDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)

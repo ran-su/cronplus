@@ -3,7 +3,6 @@ package store
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
@@ -40,36 +39,26 @@ type Settings struct {
 	MaxRunOutputKB int    `json:"maxRunOutputKB,omitempty"`
 }
 
-// Store manages SQLite persistence of app state, with a one-time import path
-// from legacy JSON state files.
+// Store manages SQLite persistence of app state.
 type Store struct {
-	mu       sync.Mutex
-	path     string
-	dbPath   string
-	jsonPath string
+	mu     sync.Mutex
+	path   string
+	dbPath string
 }
 
-// New creates a store backed by SQLite. Passing a legacy state.json path stores
-// the primary database beside it as state.db and uses the JSON file only as a
-// one-time import source.
+// New creates a store backed by SQLite.
 // Defaults to ~/.config/cronplus/state.db.
 func New(path string) *Store {
 	if path == "" {
 		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".config", "cronplus", "state.json")
+		path = filepath.Join(home, ".config", "cronplus", "state.db")
 	}
-	jsonPath, dbPath := statePaths(path)
-	return &Store{path: dbPath, dbPath: dbPath, jsonPath: jsonPath}
+	return &Store{path: path, dbPath: path}
 }
 
 // Path returns the primary SQLite state file path.
 func (s *Store) Path() string {
 	return s.path
-}
-
-// JSONPath returns the legacy JSON state file path used for one-time imports.
-func (s *Store) JSONPath() string {
-	return s.jsonPath
 }
 
 // Load reads the persisted state from disk.
@@ -148,19 +137,5 @@ func normalizeState(state *State) {
 	}
 	if state.Settings.MaxRunOutputKB < 0 {
 		state.Settings.MaxRunOutputKB = 0
-	}
-}
-
-func statePaths(path string) (string, string) {
-	if path == "" {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, ".config", "cronplus", "state.json")
-	}
-	ext := strings.ToLower(filepath.Ext(path))
-	switch ext {
-	case ".db", ".sqlite", ".sqlite3":
-		return strings.TrimSuffix(path, filepath.Ext(path)) + ".json", path
-	default:
-		return path, strings.TrimSuffix(path, filepath.Ext(path)) + ".db"
 	}
 }

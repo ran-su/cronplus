@@ -19,7 +19,7 @@ import (
 )
 
 func TestGetTaskRunsUnknownTaskReturns404(t *testing.T) {
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")
 
@@ -39,7 +39,7 @@ func TestCreateDeliveryReturns500WhenPersistFails(t *testing.T) {
 		t.Fatalf("write blocked parent: %v", err)
 	}
 
-	engine := core.NewEngine(store.New(filepath.Join(blockedParent, "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(blockedParent, "state.db")), nil)
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")
 
@@ -62,7 +62,7 @@ func TestCreateDeliveryReturns500WhenPersistFails(t *testing.T) {
 }
 
 func TestCreateDeliveryReturnsNameSlugID(t *testing.T) {
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")
 
@@ -85,7 +85,7 @@ func TestCreateDeliveryReturnsNameSlugID(t *testing.T) {
 }
 
 func TestCreateDeliveryRejectsUnsupportedDriver(t *testing.T) {
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")
 
@@ -103,7 +103,7 @@ func TestCreateDeliveryRejectsUnsupportedDriver(t *testing.T) {
 }
 
 func TestCreateDeliveryRejectsMissingTelegramConfig(t *testing.T) {
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")
 
@@ -121,7 +121,7 @@ func TestCreateDeliveryRejectsMissingTelegramConfig(t *testing.T) {
 }
 
 func TestUpdateDeliveryValidationUsesPreservedSecrets(t *testing.T) {
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	id := engine.AddDeliveryProfile(models.DeliveryProfile{
 		Name:       "Telegram",
 		DriverType: "telegram",
@@ -146,7 +146,7 @@ func TestUpdateDeliveryValidationUsesPreservedSecrets(t *testing.T) {
 }
 
 func TestSetDeliveryCommandsEndpoint(t *testing.T) {
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	id := engine.AddDeliveryProfile(models.DeliveryProfile{
 		ID:         "telegram",
 		Name:       "Telegram",
@@ -176,7 +176,7 @@ func TestCheckTaskPackageEndpoint(t *testing.T) {
 	}
 	dir := writeAPITaskPackage(t, "print('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ready\"}')\n", python, "")
 
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")
 
@@ -271,7 +271,7 @@ func TestRunTaskEndpointReturnsRunID(t *testing.T) {
 		t.Skip("python3 not available")
 	}
 	dir := writeAPITaskPackage(t, "print('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ran\"}')\n", python, "")
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -313,7 +313,7 @@ func TestActiveRunEndpointsAndCancel(t *testing.T) {
 		t.Skip("python3 not available")
 	}
 	dir := writeAPITaskPackage(t, "import time\nprint('started', flush=True)\ntime.sleep(10)\n", python, "")
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -387,7 +387,7 @@ func TestRetentionEndpoints(t *testing.T) {
 		t.Skip("python3 not available")
 	}
 	dir := writeAPITaskPackage(t, "print('x' * 2048)\nprint('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ready\"}')\n", python, "")
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -461,7 +461,7 @@ schedule:
 	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -496,7 +496,7 @@ schedule:
 
 func TestGetDeliveriesIncludesUsedByTasks(t *testing.T) {
 	dir := writeAPITaskPackage(t, "print('ok')\n", "", "delivery:\n  profiles: [telegram]\n")
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	engine.AddDeliveryProfile(models.DeliveryProfile{
 		ID:         "telegram",
 		Name:       "Telegram",
@@ -545,7 +545,7 @@ func TestDependencyHealthAndDependentsEndpoints(t *testing.T) {
       max_age_seconds: 60
       on_unhealthy: fail
 `)
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	upstream, err := engine.ImportTask(upstreamDir, true)
 	if err != nil {
 		t.Fatalf("ImportTask upstream: %v", err)
@@ -598,7 +598,7 @@ func TestTaskEnvironmentEndpointIncludesSize(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(venvDir, "cache", "data.bin"), []byte("1234567890"), 0600); err != nil {
 		t.Fatalf("write venv data: %v", err)
 	}
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -631,7 +631,7 @@ func TestTaskEnvironmentEndpointIncludesSize(t *testing.T) {
 
 func TestSchedulePreviewEndpointWorksForDisabledTask(t *testing.T) {
 	dir := writeNamedAPITaskPackage(t, "Preview Task", "print('ok')\n", "")
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, false)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)
@@ -661,7 +661,7 @@ func TestGetTaskRunsIncludesDiagnosisAndFilters(t *testing.T) {
 		t.Skip("python3 not available")
 	}
 	dir := writeAPITaskPackage(t, "print('CRONPLUS_RESULT={\"status\":\"success\",\"summary\":\"ready\"}')\n", python, "")
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.json")), nil)
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
 	task, err := engine.ImportTask(dir, true)
 	if err != nil {
 		t.Fatalf("ImportTask: %v", err)

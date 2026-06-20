@@ -60,7 +60,7 @@ func main() {
 		log.Fatalf("[CronPlus] Failed to resolve config dir: %v", err)
 	}
 	tokenPath := filepath.Join(configDir, "auth-token")
-	legacyStatePath := filepath.Join(configDir, "state.json")
+	statePath := filepath.Join(configDir, "state.db")
 
 	daemonLock, err := acquireDaemonLock(filepath.Join(configDir, "daemon.lock"), listenPort)
 	if err != nil {
@@ -79,7 +79,7 @@ func main() {
 	deliverySvc := delivery.NewService(telegramDriver)
 
 	// Initialize store and engine
-	s := store.New(legacyStatePath)
+	s := store.New(statePath)
 	engine := core.NewEngine(s, deliverySvc)
 	engine.SetSettings(store.Settings{WebServerPort: listenPort, WebServerBind: "127.0.0.1"})
 	if envMaxRuns := os.Getenv("CRONPLUS_MAX_CONCURRENT_RUNS"); envMaxRuns != "" {

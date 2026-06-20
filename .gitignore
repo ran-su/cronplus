@@ -9,3 +9,5 @@ coverage.out
 cronplus
 dist/
 *.test
+__pycache__/
+*.pyc

@@ -186,6 +186,11 @@ Official templates are under `templates/browser`:
 - `one-shot-playwright`: opens a visible isolated Playwright Chromium context for one run.
 - `profile-copy-helper`: verifies copied-profile behavior and reports copied profile size.
 
+Copy-ready example packages are under `examples/browser`:
+
+- `one-shot-browser`: a complete isolated visible Playwright browser task.
+- `profile-copy-browser`: a complete copied-profile browser task for sites that need existing cookies or localStorage without mutating the source profile.
+
 On macOS, long-lived visible Chromium sessions can accumulate GPU, compositor, extension, profile-cache, or WindowServer pressure. Restart browser-manager sessions periodically, keep monitor tasks short, prefer `copy_from` when a task needs cookies but not persistent mutation, and use `keep_on_failure` only while debugging. `--disable-gpu` can reduce GPU/WindowServer pressure for some sites, but it can also change rendering and fingerprint signals. Headless mode may fail on antibot-heavy sites because browser fingerprints, extension state, windowing APIs, and user-session behavior differ from a normal visible browser.
 
 ### Task Lifecycle

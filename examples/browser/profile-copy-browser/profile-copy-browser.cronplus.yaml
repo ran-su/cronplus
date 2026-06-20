@@ -1,0 +1,26 @@
+manifest_version: 1
+script:
+  path: ./script.py
+  name: Profile-Copy Browser Example
+  description: Copies a durable browser profile into an isolated run profile before browsing.
+runtime:
+  environment:
+    strategy: managed_venv
+    requirements_file: ./requirements.txt
+  timeout_seconds: 240
+  max_output_kb: 256
+  browser:
+    enabled: true
+    profile_mode: copy_from
+    profile_source: ./profile
+    downloads_mode: isolated
+    cache_policy: isolated
+    cleanup_policy: keep_on_failure
+    process_detection_hints: [Chromium, Chrome, cloakbrowser]
+schedule:
+  expression: "*/30 * * * *"
+  timezone: UTC
+delivery:
+  send_on: [failure, warning]
+result_contract:
+  expect_structured_result: true

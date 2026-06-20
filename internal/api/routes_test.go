@@ -440,7 +440,7 @@ func TestRetentionEndpoints(t *testing.T) {
 
 func TestHealthIncludesBrowserSummary(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("print('CRONPLUS_RESULT={\"status\":\"failure\",\"summary\":\"browser failed\"}')\n"), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte("print('ok')\n"), 0644); err != nil {
 		t.Fatalf("write script: %v", err)
 	}
 	manifest := `manifest_version: 1
@@ -461,21 +461,55 @@ schedule:
 	if err := os.WriteFile(filepath.Join(dir, "test.cronplus.yaml"), []byte(manifest), 0644); err != nil {
 		t.Fatalf("write manifest: %v", err)
 	}
-	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
-	task, err := engine.ImportTask(dir, true)
-	if err != nil {
-		t.Fatalf("ImportTask: %v", err)
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	runDir := filepath.Join(t.TempDir(), "browser-run")
+	profileDir := filepath.Join(runDir, "browser-profile")
+	if err := os.MkdirAll(profileDir, 0755); err != nil {
+		t.Fatalf("create browser profile dir: %v", err)
 	}
-	if _, err := engine.RunTask(task.ID, "manual"); err != nil {
-		t.Fatalf("RunTask: %v", err)
+	startedAt := time.Now().Add(-time.Minute)
+	taskID := "browser-health-task"
+	if err := store.New(statePath).Save(&store.State{
+		Tasks: []store.PersistedTask{{ID: taskID, PackageDir: dir, Enabled: true, CreatedAt: startedAt}},
+		RunHistory: map[string][]models.RunRecord{
+			taskID: {
+				{
+					ID:         "browser-run",
+					TaskID:     taskID,
+					Trigger:    "manual",
+					StartedAt:  startedAt,
+					FinishedAt: startedAt.Add(time.Second),
+					Outcome: models.RunOutcome{
+						ExitCode: 1,
+						ParsedResult: &models.ParsedResult{
+							Status:  "failure",
+							Summary: "browser failed",
+						},
+						Diagnostics: models.RunDiagnostics{
+							RunDirectory: runDir,
+							Browser: models.BrowserRunDiagnostics{
+								Enabled:              true,
+								ProfileMode:          "isolated",
+								ProfilePath:          profileDir,
+								CleanupPolicy:        "keep_on_failure",
+								CleanupStatus:        "retained",
+								RunDirectoryRetained: true,
+							},
+						},
+					},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("seed state: %v", err)
 	}
-	defer func() {
-		for _, run := range engine.RunHistory(task.ID) {
-			if run.Outcome.Diagnostics.RunDirectory != "" {
-				_ = os.RemoveAll(run.Outcome.Diagnostics.RunDirectory)
-			}
-		}
-	}()
+	engine := core.NewEngine(store.New(statePath), nil)
+	if err := engine.RestoreState(); err != nil {
+		t.Fatalf("RestoreState: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = os.RemoveAll(runDir)
+	})
 
 	mux := http.NewServeMux()
 	Routes(mux, engine, "test")

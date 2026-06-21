@@ -32,6 +32,11 @@ let refreshInFlight = false;
 let refreshQueued = false;
 let refreshQueuedForceRender = false;
 let deliveryPreviewText = '';
+let currentRouteInitialized = false;
+
+if ('scrollRestoration' in history) {
+    history.scrollRestoration = 'manual';
+}
 
 // ===== Auth =====
 
@@ -359,10 +364,12 @@ function connectSSE() {
 
 function navigate(hash) {
     const path = hash.replace('#', '') || '/';
-    if (path !== currentPage) {
+    const routeChanged = !currentRouteInitialized || path !== currentPage;
+    if (routeChanged) {
         closeRouteModals();
     }
     currentPage = path;
+    currentRouteInitialized = true;
 
     document.querySelectorAll('.nav-link').forEach(link => {
         const page = link.dataset.page;
@@ -372,7 +379,10 @@ function navigate(hash) {
         );
     });
 
-    renderCurrentPage();
+    renderCurrentPage({
+        preserveScroll: !routeChanged,
+        resetScroll: routeChanged
+    });
 }
 
 window.addEventListener('hashchange', () => navigate(window.location.hash));
@@ -455,7 +465,17 @@ document.addEventListener('click', (e) => {
     }
 });
 
-function renderCurrentPage() {
+function renderCurrentPage(options = {}) {
+    const render = () => renderCurrentPageContent();
+    if (options.preserveScroll === false) {
+        render();
+    } else {
+        mutatePreservingContentScroll(render);
+    }
+    if (options.resetScroll) resetContentScroll();
+}
+
+function renderCurrentPageContent() {
     const content = document.getElementById('content');
     const path = currentPage;
 
@@ -485,31 +505,140 @@ function renderCurrentPage() {
     else content.innerHTML = '<div class="empty-state"><h3>Page not found</h3></div>';
 }
 
+function resetContentScroll() {
+    const content = document.getElementById('content');
+    if (content) {
+        content.scrollTop = 0;
+        content.scrollLeft = 0;
+    }
+}
+
+function mutatePreservingContentScroll(mutate) {
+    const scrollState = captureContentScrollState();
+    const result = mutate();
+    restoreContentScrollState(scrollState);
+    return result;
+}
+
+function setHTMLPreservingContentScroll(el, html) {
+    if (!el) return;
+    mutatePreservingContentScroll(() => {
+        el.innerHTML = html;
+    });
+}
+
+function captureContentScrollState() {
+    const content = document.getElementById('content');
+    if (!content) return null;
+    const anchor = findContentScrollAnchor(content);
+    return {
+        content,
+        scrollTop: content.scrollTop,
+        scrollLeft: content.scrollLeft,
+        anchorSelector: anchor?.selector || '',
+        anchorOffsetTop: anchor?.offsetTop || 0,
+        nestedScrollPositions: captureNestedScrollPositions(content)
+    };
+}
+
+function captureNestedScrollPositions(content) {
+    return [...content.querySelectorAll('[data-scroll-key], [id]')]
+        .filter(el => el !== content && (el.scrollTop || el.scrollLeft))
+        .map(el => ({
+            selector: scrollAnchorSelector(el),
+            scrollTop: el.scrollTop,
+            scrollLeft: el.scrollLeft
+        }));
+}
+
+function findContentScrollAnchor(content) {
+    const rect = content.getBoundingClientRect();
+    if (!rect.width || !rect.height) return null;
+    const x = Math.min(rect.right - 1, rect.left + Math.min(Math.max(rect.width * 0.2, 32), 160));
+    const sampleYs = [
+        rect.top + 16,
+        rect.top + Math.min(96, rect.height * 0.25),
+        rect.top + Math.min(240, rect.height * 0.5)
+    ].filter(y => y > rect.top && y < rect.bottom);
+
+    for (const y of sampleYs) {
+        for (const el of document.elementsFromPoint(x, y)) {
+            if (!(el instanceof Element) || el === content || !content.contains(el)) continue;
+            const target = el.closest('[data-scroll-key], [id]');
+            if (!target || target === content || !content.contains(target)) continue;
+            return {
+                selector: scrollAnchorSelector(target),
+                offsetTop: target.getBoundingClientRect().top - rect.top
+            };
+        }
+    }
+    return null;
+}
+
+function scrollAnchorSelector(el) {
+    if (el.dataset.scrollKey) {
+        return `[data-scroll-key="${cssString(el.dataset.scrollKey)}"]`;
+    }
+    return `[id="${cssString(el.id)}"]`;
+}
+
+function cssString(value) {
+    return String(value || '').replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+function restoreContentScrollState(state) {
+    if (!state?.content || !document.body.contains(state.content)) return;
+    const content = state.content;
+    let restoredAnchor = false;
+    if (state.anchorSelector) {
+        const anchor = content.querySelector(state.anchorSelector);
+        if (anchor) {
+            const offsetTop = anchor.getBoundingClientRect().top - content.getBoundingClientRect().top;
+            content.scrollTop += offsetTop - state.anchorOffsetTop;
+            restoredAnchor = true;
+        }
+    }
+    if (!restoredAnchor) {
+        content.scrollTop = state.scrollTop;
+    }
+    content.scrollLeft = state.scrollLeft;
+    for (const nested of state.nestedScrollPositions || []) {
+        const el = content.querySelector(nested.selector);
+        if (!el) continue;
+        el.scrollTop = nested.scrollTop;
+        el.scrollLeft = nested.scrollLeft;
+    }
+}
+
 function updateCurrentPage(changes = {}) {
     const path = currentPage;
 
     if (path === '/' || path === '/dashboard') {
         const el = document.getElementById('dashboard-content');
         if (el) {
-            el.innerHTML = renderDashboardContent();
+            setHTMLPreservingContentScroll(el, renderDashboardContent());
             return;
         }
     } else if (path === '/tasks') {
         const el = document.getElementById('task-list-content');
         if (el) {
-            el.innerHTML = renderTaskListContent();
+            setHTMLPreservingContentScroll(el, renderTaskListContent());
             return;
         }
+    } else if (path.startsWith('/tasks/') && path.includes('/runs/')) {
+        const parts = path.split('/');
+        loadRunDetail(parts[2], parts[4]);
+        return;
     } else if (path === '/delivery') {
         const el = document.getElementById('delivery-list-content');
         if (el) {
-            el.innerHTML = renderDeliveryList();
+            setHTMLPreservingContentScroll(el, renderDeliveryList());
             return;
         }
     } else if (path === '/commands') {
         const el = document.getElementById('commands-content');
         if (el) {
-            el.innerHTML = renderCommandsContent();
+            setHTMLPreservingContentScroll(el, renderCommandsContent());
             return;
         }
     } else if (path === '/settings') {
@@ -652,7 +781,7 @@ function renderTaskCards(tasks) {
         const taskState = taskListState(t, lr);
 
         return `
-        <div class="task-row${t.running ? ' is-running' : ''}" role="link" tabindex="0" onclick="window.location.hash='#/tasks/${t.id}'" onkeydown="if(event.key==='Enter')window.location.hash='#/tasks/${t.id}'">
+        <div class="task-row${t.running ? ' is-running' : ''}" data-scroll-key="task-row:${attr(t.id)}" role="link" tabindex="0" onclick="window.location.hash='#/tasks/${t.id}'" onkeydown="if(event.key==='Enter')window.location.hash='#/tasks/${t.id}'">
             <div class="task-status-dot ${taskState.className}" title="${attr(taskState.label)}" aria-label="${attr(taskState.label)}"></div>
             <div class="task-info">
                 <div class="task-title-row">
@@ -695,7 +824,7 @@ function renderTaskDetail(path) {
     }
 
     return `
-        <div class="detail-header">
+        <div class="detail-header" data-scroll-key="task-detail:${attr(id)}:header">
             <a href="#/tasks" class="back-link" onclick="goToHash('#/tasks');return false;">←</a>
             <h1>${esc(task.name)}</h1>
             <span class="badge badge-${task.enabled ? 'success' : 'muted'}">${task.enabled ? 'Enabled' : 'Disabled'}</span>
@@ -712,16 +841,16 @@ function renderTaskDetail(path) {
         </div>
         <div class="task-content-layout">
             <div class="task-main">
-                <div class="detail-card" style="margin-bottom:32px;">
+                <div class="detail-card" data-scroll-key="task-detail:${attr(id)}:description" style="margin-bottom:32px;">
                     <h3>Description</h3>
                     <p style="font-size:15px;line-height:1.6;color:var(--text-primary)">${esc(task.description || 'No description provided.')}</p>
                 </div>
-                <div id="task-check-result-${id}">
+                <div id="task-check-result-${id}" data-scroll-key="task-detail:${attr(id)}:check">
                     ${appState.taskChecks[id] ? renderTaskPackageCheck(appState.taskChecks[id]) : ''}
                 </div>
                 
                 <h2 style="font-size:18px;margin-bottom:16px;">Run History</h2>
-                <div id="run-history-${id}">${renderRunHistoryInitial(id)}</div>
+                <div id="run-history-${id}" data-scroll-key="task-detail:${attr(id)}:run-history">${renderRunHistoryInitial(id)}</div>
             </div>
 
             <div class="task-sidebar">
@@ -960,11 +1089,11 @@ async function loadRunHistory(taskID) {
     const el = document.getElementById(`run-history-${taskID}`);
     if (!el) return;
     if (!data) {
-        el.innerHTML = renderRunHistoryUnavailable(taskID, 'CronPlus could not load this task’s runs. Retry after the daemon reconnects.');
+        setHTMLPreservingContentScroll(el, renderRunHistoryUnavailable(taskID, 'CronPlus could not load this task’s runs. Retry after the daemon reconnects.'));
         return;
     }
     if (data.error) {
-        el.innerHTML = renderRunHistoryUnavailable(taskID, data.message || 'Could not load run history.');
+        setHTMLPreservingContentScroll(el, renderRunHistoryUnavailable(taskID, data.message || 'Could not load run history.'));
         return;
     }
 
@@ -972,11 +1101,11 @@ async function loadRunHistory(taskID) {
     appState.runHistories[taskID] = runs;
     saveOfflineCache();
     if (runs.length === 0) {
-        el.innerHTML = renderInlineState('No runs yet', 'This task has not recorded a run.', 'neutral');
+        setHTMLPreservingContentScroll(el, renderInlineState('No runs yet', 'This task has not recorded a run.', 'neutral'));
         return;
     }
 
-    el.innerHTML = renderRunHistoryList(taskID, runs);
+    setHTMLPreservingContentScroll(el, renderRunHistoryList(taskID, runs));
 }
 
 function renderRunHistoryInitial(taskID) {
@@ -1030,7 +1159,7 @@ function renderRunHistoryResults(taskID, runs, filters = {}) {
                 const delivery = deliveryHistorySummary(r.deliveryResults || []);
                 const diagnosis = r.diagnosis || {};
                 const summary = diagnosis.summary || r.outcome?.parsedResult?.summary || '';
-                return `<a class="run-history-row" href="#/tasks/${r.taskID || taskID}/runs/${r.id}">
+                return `<a class="run-history-row" data-scroll-key="run-history:${attr(r.taskID || taskID)}:${attr(r.id)}" href="#/tasks/${r.taskID || taskID}/runs/${r.id}">
                     <div class="run-history-primary">
                         <span class="run-history-status-group">
                             <span class="badge badge-${runStatusBadge(status)}">${esc(runHistoryStatusLabel(status))}</span>
@@ -1085,12 +1214,12 @@ function updateRunHistoryFilter(taskID, key, value) {
     appState.runFilters[taskID] = { ...(appState.runFilters[taskID] || {}), [key]: value };
     const resultsEl = document.getElementById(runHistoryResultsID(taskID));
     if (resultsEl) {
-        resultsEl.innerHTML = renderRunHistoryResults(taskID, appState.runHistories[taskID] || [], appState.runFilters[taskID] || {});
+        setHTMLPreservingContentScroll(resultsEl, renderRunHistoryResults(taskID, appState.runHistories[taskID] || [], appState.runFilters[taskID] || {}));
         return;
     }
     const listEl = document.getElementById(`run-history-${taskID}`);
     if (listEl) {
-        listEl.innerHTML = renderRunHistoryList(taskID, appState.runHistories[taskID] || []);
+        setHTMLPreservingContentScroll(listEl, renderRunHistoryList(taskID, appState.runHistories[taskID] || []));
     }
 }
 
@@ -1098,7 +1227,7 @@ function resetRunHistoryFilters(taskID) {
     appState.runFilters[taskID] = {};
     const el = document.getElementById(`run-history-${taskID}`);
     if (el) {
-        el.innerHTML = renderRunHistoryList(taskID, appState.runHistories[taskID] || []);
+        setHTMLPreservingContentScroll(el, renderRunHistoryList(taskID, appState.runHistories[taskID] || []));
     }
 }
 
@@ -1135,7 +1264,7 @@ function renderRunDetail(path) {
     const task = appState.tasks.find(t => t.id === taskID);
 
     return `
-        <div class="detail-header">
+        <div class="detail-header" data-scroll-key="run-detail:${attr(taskID)}:${attr(runID)}:header">
             <a href="#/tasks/${taskID}" class="back-link" aria-label="Back to task" onclick="goToHash('#/tasks/${taskID}');return false;">←</a>
             <span class="breadcrumb-label">${esc(task?.name || 'Task')}</span>
             <h1>Run Detail</h1>
@@ -1152,25 +1281,25 @@ async function loadRunDetail(taskID, runID) {
         const cached = cachedRunDetail(taskID, runID);
         if (cached) {
             appState.runDetails[runID] = cached;
-            el.innerHTML = renderRunDetailContent(cached, {
+            setHTMLPreservingContentScroll(el, renderRunDetailContent(cached, {
                 notice: run.message || 'Showing cached run details while CronPlus is disconnected.',
                 noticeTone: 'warning'
-            });
+            }));
             return;
         }
-        el.innerHTML = renderInlineState(
+        setHTMLPreservingContentScroll(el, renderInlineState(
             'Run detail unavailable',
             run.message || 'CronPlus could not load this run. Retry after the daemon reconnects.',
             'error',
             'Retry',
             `data-action="retry-run-detail" data-task-id="${attr(taskID)}" data-run-id="${attr(runID)}"`
-        );
+        ));
         return;
     }
     appState.runDetails[runID] = run;
     saveOfflineCache();
 
-    el.innerHTML = renderRunDetailContent(run);
+    setHTMLPreservingContentScroll(el, renderRunDetailContent(run));
 }
 
 function cachedRunDetail(taskID, runID) {
@@ -1206,7 +1335,7 @@ function renderRunDetailContent(run, options = {}) {
 
     return `
         ${options.notice ? renderInlineNotice(options.notice, options.noticeTone || 'warning') : ''}
-        <div class="detail-grid">
+        <div class="detail-grid" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:summary">
             <div class="detail-card">
                 <h3>Status</h3>
                 <p><span class="badge badge-${runStatusBadge(status)}">${esc(status)}</span></p>
@@ -1226,7 +1355,7 @@ function renderRunDetailContent(run, options = {}) {
         </div>
         ${renderRunDiagnosis(run)}
         ${run.outcome?.diagnostics ? `
-        <div class="detail-card" style="margin-bottom:16px">
+        <div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:diagnostics" style="margin-bottom:16px">
             <h3>Run Diagnostics</h3>
             <div class="manifest-row"><span class="label">Python</span><span class="value">${esc(diagnostics.pythonExecutable || 'N/A')}</span></div>
             <div class="manifest-row"><span class="label">Script</span><span class="value">${esc(diagnostics.scriptPath || 'N/A')}</span></div>
@@ -1241,7 +1370,7 @@ function renderRunDetailContent(run, options = {}) {
             <div class="manifest-row"><span class="label">Output</span><span class="value">${formatBytes((diagnostics.stdoutBytes || 0) + (diagnostics.stderrBytes || 0))}${diagnostics.outputBytesDiscarded ? ` · ${formatBytes(diagnostics.outputBytesDiscarded)} discarded` : ''}</span></div>
             <div class="manifest-row"><span class="label">Structured Result</span><span class="value">${diagnostics.structuredResultFound ? 'found' : 'missing'}</span></div>
         </div>
-        <div class="detail-card" style="margin-bottom:16px">
+        <div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:cleanup" style="margin-bottom:16px">
             <h3>Resource Cleanup</h3>
             <div class="manifest-row"><span class="label">Process Group</span><span class="value">${cleanup.processGroupTerminated ? (cleanup.processGroupForceKilled ? 'force killed' : 'terminated') : 'clear'}</span></div>
             <div class="manifest-row"><span class="label">Detached Killed</span><span class="value">${cleanup.detachedProcessesKilled || 0}</span></div>
@@ -1250,16 +1379,16 @@ function renderRunDetailContent(run, options = {}) {
             ${cleanup.runDirectoryCleanupError ? `<div class="delivery-error">${esc(cleanup.runDirectoryCleanupError)}</div>` : ''}
         </div>` : ''}
         ${run.outcome?.parsedResult?.summary ? `
-        <div class="detail-card" style="margin-bottom:16px">
+        <div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:result-summary" style="margin-bottom:16px">
             <h3>Summary</h3>
             <p>${esc(run.outcome.parsedResult.summary)}</p>
         </div>` : ''}
         ${deliveryHTML}
         <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text-secondary)">STDOUT</h3>
-        <div class="log-block">${esc(run.outcome?.stdout || '(empty)')}</div>
+        <div class="log-block" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:stdout">${esc(run.outcome?.stdout || '(empty)')}</div>
         ${run.outcome?.stderr ? `
         <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text-secondary)">STDERR</h3>
-        <div class="log-block">${esc(run.outcome.stderr)}</div>` : ''}
+        <div class="log-block" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:stderr">${esc(run.outcome.stderr)}</div>` : ''}
     `;
 }
 
@@ -1281,21 +1410,21 @@ function renderHealth() {
 async function loadHealth(options = {}) {
     if (!options.force && appState.health) {
         const el = document.getElementById('health-content');
-        if (el) el.innerHTML = renderHealthContent();
+        if (el) setHTMLPreservingContentScroll(el, renderHealthContent());
         return;
     }
     const data = await api('GET', '/api/health');
     const el = document.getElementById('health-content');
     if (!data) {
-        if (el) el.innerHTML = renderInlineState('Health unavailable', 'CronPlus could not load health information.', 'error', 'Retry', 'data-action="retry-health"');
+        if (el) setHTMLPreservingContentScroll(el, renderInlineState('Health unavailable', 'CronPlus could not load health information.', 'error', 'Retry', 'data-action="retry-health"'));
         return;
     }
     if (data.error) {
-        if (el) el.innerHTML = renderInlineState('Health unavailable', data.message || 'CronPlus could not load health information.', 'error', 'Retry', 'data-action="retry-health"');
+        if (el) setHTMLPreservingContentScroll(el, renderInlineState('Health unavailable', data.message || 'CronPlus could not load health information.', 'error', 'Retry', 'data-action="retry-health"'));
         return;
     }
     appState.health = data;
-    if (el) el.innerHTML = renderHealthContent();
+    if (el) setHTMLPreservingContentScroll(el, renderHealthContent());
 }
 
 function renderHealthContent() {

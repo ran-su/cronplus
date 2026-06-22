@@ -635,20 +635,22 @@ func writeSQLiteRunHistory(tx *sql.Tx, runHistory map[string][]models.RunRecord)
 				var err error
 				parsedResultJSON, err = marshalJSONString(record.Outcome.ParsedResult)
 				if err != nil {
-					continue
+					return fmt.Errorf("failed to encode parsed result for run %s: %w", record.ID, err)
 				}
 				summary = record.Outcome.ParsedResult.Summary
 			}
 			diagnosticsJSON, err := marshalJSONString(record.Outcome.Diagnostics)
 			if err != nil {
-				continue
+				return fmt.Errorf("failed to encode diagnostics for run %s: %w", record.ID, err)
 			}
 			status := models.RunStatusFromOutcome(record.Outcome)
 			if _, err := recordStmt.Exec(record.ID, record.TaskID, record.Trigger, formatSQLiteTime(record.StartedAt), formatSQLiteTime(record.FinishedAt), status, record.Outcome.ExitCode, boolInt(record.Outcome.TimedOut), record.Outcome.DurationMs, summary, record.Outcome.Stdout, record.Outcome.Stderr, nullString(parsedResultJSON), diagnosticsJSON); err != nil {
-				continue
+				return fmt.Errorf("failed to write run record %s: %w", record.ID, err)
 			}
 			for i, result := range record.DeliveryResults {
-				_, _ = deliveryStmt.Exec(record.ID, i, result.ProfileID, result.ProfileName, result.Status, nullString(result.Error))
+				if _, err := deliveryStmt.Exec(record.ID, i, result.ProfileID, result.ProfileName, result.Status, nullString(result.Error)); err != nil {
+					return fmt.Errorf("failed to write delivery result %d for run %s: %w", i, record.ID, err)
+				}
 			}
 		}
 	}

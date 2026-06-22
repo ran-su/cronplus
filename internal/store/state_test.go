@@ -3,6 +3,7 @@ package store
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -206,3 +207,107 @@ func TestSQLiteLoadsStoredRunStatusWithoutParsedResult(t *testing.T) {
 		t.Fatalf("parsed result = %+v, want stored summary", runs[0].Outcome.ParsedResult)
 	}
 }
+
+func TestSQLiteSaveFailsWhenRunHistoryCannotBeSerialized(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	st := New(statePath)
+	state := &State{
+		Tasks: []PersistedTask{{ID: "task-1", PackageDir: "/tmp/task-1", Enabled: true}},
+		RunHistory: map[string][]models.RunRecord{
+			"task-1": {
+				{
+					ID:         "run-1",
+					TaskID:     "task-1",
+					Trigger:    "manual",
+					StartedAt:  time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC),
+					FinishedAt: time.Date(2026, 6, 14, 12, 0, 1, 0, time.UTC),
+					Outcome: models.RunOutcome{
+						ParsedResult: &models.ParsedResult{
+							Status:  "success",
+							Summary: "bad payload",
+							Data: map[string]any{
+								"bad": make(chan int),
+							},
+						},
+						Diagnostics: models.RunDiagnostics{},
+					},
+				},
+			},
+		},
+		Settings: Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
+	}
+
+	err := st.Save(state)
+	if err == nil {
+		t.Fatal("Save() error = nil, want serialization failure")
+	}
+	if !strings.Contains(err.Error(), "failed to encode parsed result") {
+		t.Fatalf("Save() error = %v, want parsed result encoding failure", err)
+	}
+}
+
+func TestSQLiteSavePreservesExistingRunHistoryOnFailedRewrite(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "state.db")
+	st := New(statePath)
+	goodState := &State{
+		Tasks: []PersistedTask{{ID: "task-1", PackageDir: "/tmp/task-1", Enabled: true}},
+		RunHistory: map[string][]models.RunRecord{
+			"task-1": {
+				{
+					ID:         "run-good",
+					TaskID:     "task-1",
+					Trigger:    "manual",
+					StartedAt:  time.Date(2026, 6, 14, 12, 0, 0, 0, time.UTC),
+					FinishedAt: time.Date(2026, 6, 14, 12, 0, 1, 0, time.UTC),
+					Outcome: models.RunOutcome{
+						ParsedResult: &models.ParsedResult{Status: "success", Summary: "ok"},
+						Diagnostics: models.RunDiagnostics{},
+					},
+				},
+			},
+		},
+		Settings: Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
+	}
+	if err := st.Save(goodState); err != nil {
+		t.Fatalf("initial Save: %v", err)
+	}
+
+	badState := &State{
+		Tasks: goodState.Tasks,
+		RunHistory: map[string][]models.RunRecord{
+			"task-1": {
+				{
+					ID:         "run-bad",
+					TaskID:     "task-1",
+					Trigger:    "manual",
+					StartedAt:  time.Date(2026, 6, 14, 13, 0, 0, 0, time.UTC),
+					FinishedAt: time.Date(2026, 6, 14, 13, 0, 1, 0, time.UTC),
+					Outcome: models.RunOutcome{
+						ParsedResult: &models.ParsedResult{
+							Status:  "success",
+							Summary: "bad payload",
+							Data: map[string]any{
+								"bad": make(chan int),
+							},
+						},
+						Diagnostics: models.RunDiagnostics{},
+					},
+				},
+			},
+		},
+		Settings: goodState.Settings,
+	}
+	if err := st.Save(badState); err == nil {
+		t.Fatal("failed Save error = nil, want serialization failure")
+	}
+
+	got, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load after failed save: %v", err)
+	}
+	runs := got.RunHistory["task-1"]
+	if len(runs) != 1 || runs[0].ID != "run-good" {
+		t.Fatalf("run history after failed save = %+v, want preserved prior data", got.RunHistory)
+	}
+}
+

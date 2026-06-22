@@ -305,6 +305,8 @@ func NextRunTimesForManifest(m *models.ScriptManifest, count int, after time.Tim
 	}
 	loc, err := time.LoadLocation(m.Schedule.Timezone)
 	if err != nil {
+		// Validation normally rejects invalid timezones, but keep UTC fallback here
+		// so schedule previews remain resilient if a bad manifest slips through.
 		loc = time.UTC
 	}
 	runs := make([]time.Time, 0, count)

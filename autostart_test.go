@@ -102,6 +102,55 @@ func TestUnstableExecutablePathDetection(t *testing.T) {
 	}
 }
 
+func TestResolveListenPort(t *testing.T) {
+	tests := []struct {
+		name    string
+		flagPort int
+		envPort string
+		want    int
+	}{
+		{name: "default", want: 9876},
+		{name: "flag wins", flagPort: 4321, envPort: "1234", want: 4321},
+		{name: "env accepted", envPort: " 8080 ", want: 8080},
+		{name: "env zero rejected", envPort: "0", want: 9876},
+		{name: "env negative rejected", envPort: "-1", want: 9876},
+		{name: "env too large rejected", envPort: "65536", want: 9876},
+		{name: "env invalid rejected", envPort: "abc", want: 9876},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := resolveListenPort(tt.flagPort, tt.envPort); got != tt.want {
+				t.Fatalf("resolveListenPort(%d, %q) = %d, want %d", tt.flagPort, tt.envPort, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestResolveMaxConcurrentRuns(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  int
+		ok    bool
+	}{
+		{name: "valid", input: " 3 ", want: 3, ok: true},
+		{name: "empty", input: "", ok: false},
+		{name: "zero", input: "0", ok: false},
+		{name: "negative", input: "-2", ok: false},
+		{name: "invalid", input: "abc", ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := resolveMaxConcurrentRuns(tt.input)
+			if got != tt.want || ok != tt.ok {
+				t.Fatalf("resolveMaxConcurrentRuns(%q) = (%d, %t), want (%d, %t)", tt.input, got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
 func writeTestLaunchFile(t *testing.T, name string, data []byte, perm os.FileMode) string {
 	t.Helper()
 	dir := filepath.Join(".cache", "autostart-test", t.Name())

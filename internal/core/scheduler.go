@@ -89,11 +89,12 @@ func (s *Scheduler) tick(now time.Time) {
 
 		log.Printf("[CronPlus] Scheduled run: %s", task.DisplayName)
 		taskID := task.ID
-		go func() {
+		taskName := task.DisplayName
+		go func(taskID, taskName string) {
 			if _, err := s.engine.RunTask(taskID, "schedule"); err != nil {
-				log.Printf("[CronPlus] Scheduled run failed for '%s': %v", task.DisplayName, err)
+				log.Printf("[CronPlus] Scheduled run failed for '%s': %v", taskName, err)
 			}
-		}()
+		}(taskID, taskName)
 	}
 }
 
@@ -110,6 +111,7 @@ func taskMinuteKeyIfDue(task *models.Task, now time.Time) (string, bool) {
 	tz := task.Manifest.Schedule.Timezone
 	loc, err := time.LoadLocation(tz)
 	if err != nil {
+		log.Printf("[CronPlus] Invalid timezone %q for task %q; falling back to UTC.", tz, task.DisplayName)
 		loc = time.UTC
 	}
 

@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -46,13 +47,7 @@ func main() {
 	log.SetFlags(log.Ltime)
 	log.Println("[CronPlus] Starting...")
 
-	// Resolve port: flag > env > default
-	listenPort := 9876
-	if *port > 0 {
-		listenPort = *port
-	} else if envPort := os.Getenv("CRONPLUS_PORT"); envPort != "" {
-		fmt.Sscanf(envPort, "%d", &listenPort)
-	}
+	listenPort := resolveListenPort(*port, os.Getenv("CRONPLUS_PORT"))
 
 	// Config paths
 	configDir, err := defaultConfigDir()
@@ -82,10 +77,12 @@ func main() {
 	s := store.New(statePath)
 	engine := core.NewEngine(s, deliverySvc)
 	engine.SetSettings(store.Settings{WebServerPort: listenPort, WebServerBind: "127.0.0.1"})
+	if maxRuns, ok := resolveMaxConcurrentRuns(os.Getenv("CRONPLUS_MAX_CONCURRENT_RUNS")); ok {
+		engine.SetMaxConcurrentRuns(maxRuns)
+	}
 	if envMaxRuns := os.Getenv("CRONPLUS_MAX_CONCURRENT_RUNS"); envMaxRuns != "" {
-		var maxRuns int
-		if _, err := fmt.Sscanf(envMaxRuns, "%d", &maxRuns); err == nil && maxRuns > 0 {
-			engine.SetMaxConcurrentRuns(maxRuns)
+		if _, ok := resolveMaxConcurrentRuns(envMaxRuns); !ok {
+			log.Printf("[CronPlus] Ignoring invalid CRONPLUS_MAX_CONCURRENT_RUNS=%q; using default %d.", envMaxRuns, engine.MaxConcurrentRuns())
 		}
 	}
 
@@ -170,6 +167,26 @@ func main() {
 	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatalf("[CronPlus] Server error: %v", err)
 	}
+}
+
+func resolveListenPort(flagPort int, envPort string) int {
+	listenPort := 9876
+	if flagPort > 0 {
+		return flagPort
+	}
+	parsedPort, err := strconv.Atoi(strings.TrimSpace(envPort))
+	if err != nil || parsedPort <= 0 || parsedPort > 65535 {
+		return listenPort
+	}
+	return parsedPort
+}
+
+func resolveMaxConcurrentRuns(envMaxRuns string) (int, bool) {
+	maxRuns, err := strconv.Atoi(strings.TrimSpace(envMaxRuns))
+	if err != nil || maxRuns <= 0 {
+		return 0, false
+	}
+	return maxRuns, true
 }
 
 func runCLICommand(args []string) (bool, int) {

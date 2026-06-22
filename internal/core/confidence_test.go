@@ -29,6 +29,23 @@ func TestNextRunTimesForManifestReturnsUpcomingRuns(t *testing.T) {
 	}
 }
 
+func TestNextRunTimesForManifestFallsBackToUTCForInvalidTimezone(t *testing.T) {
+	m := &models.ScriptManifest{}
+	m.Defaults()
+	m.Schedule.Expression = "0 9 * * *"
+	m.Schedule.Timezone = "Mars/Olympus"
+
+	after := time.Date(2026, 6, 1, 8, 30, 0, 0, time.UTC)
+	runs := NextRunTimesForManifest(m, 1, after)
+
+	if len(runs) != 1 {
+		t.Fatalf("runs len = %d, want 1: %+v", len(runs), runs)
+	}
+	if got := runs[0].Format(time.RFC3339); got != "2026-06-01T09:00:00Z" {
+		t.Fatalf("first run = %s, want UTC fallback 2026-06-01T09:00:00Z", got)
+	}
+}
+
 func TestDiagnoseOutcomeRequiredStructuredResult(t *testing.T) {
 	diagnosis := DiagnoseOutcome(models.RunOutcome{
 		ExitCode: 0,

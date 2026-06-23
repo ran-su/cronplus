@@ -41,13 +41,11 @@ if ('scrollRestoration' in history) {
 // ===== Auth =====
 
 async function init() {
-    // Step 1: Try localStorage token
     if (authToken) {
         const ok = await testToken(authToken);
         if (ok) { showApp(); return; }
     }
 
-    // Step 2: Try auto-auth (localhost-only)
     try {
         const resp = await fetch(`${API_BASE}/api/auth/check`);
         if (resp.ok) {
@@ -59,9 +57,8 @@ async function init() {
                 return;
             }
         }
-    } catch (e) { /* not localhost or server down */ }
+    } catch (e) {}
 
-    // Step 3: Show login
     showLogin();
 }
 
@@ -71,7 +68,9 @@ async function testToken(token) {
             headers: { 'Authorization': `Bearer ${token}` }
         });
         return resp.ok;
-    } catch { return false; }
+    } catch {
+        return false;
+    }
 }
 
 function showLogin() {
@@ -118,7 +117,10 @@ async function api(method, path, body) {
         };
         if (body) opts.body = JSON.stringify(body);
         const resp = await fetch(`${API_BASE}${path}`, opts);
-        if (resp.status === 401) { showLogin(); return null; }
+        if (resp.status === 401) {
+            showLogin();
+            return null;
+        }
 
         const text = await resp.text();
         let data = {};
@@ -182,6 +184,7 @@ async function performRefreshAll(options = {}) {
         deliveries: !!options.forceRender,
         commands: !!options.forceRender
     };
+
     if (status && !status.error) {
         const sig = stateSignature(status);
         if (sig !== appStateSignatures.status) {
@@ -192,6 +195,7 @@ async function performRefreshAll(options = {}) {
             saveOfflineCache();
         }
     }
+
     if (tasks && !tasks.error) {
         const nextTasks = tasks.tasks || [];
         const sig = stateSignature(nextTasks);
@@ -215,6 +219,7 @@ async function performRefreshAll(options = {}) {
             saveOfflineCache();
         }
     }
+
     if (deliveries && !deliveries.error) {
         const nextDeliveries = deliveries.profiles || [];
         const sig = stateSignature(nextDeliveries);
@@ -226,6 +231,7 @@ async function performRefreshAll(options = {}) {
             saveOfflineCache();
         }
     }
+
     if (commands && !commands.error) {
         const nextCommands = commands.commands || [];
         const sig = stateSignature(nextCommands);
@@ -237,6 +243,7 @@ async function performRefreshAll(options = {}) {
             saveOfflineCache();
         }
     }
+
     if (changed && !hasActiveEditorState()) {
         updateCurrentPage(changes);
     }
@@ -321,7 +328,6 @@ function connectSSE() {
         sseConnection.close();
     }
 
-    // SSE doesn't support custom headers, so we pass token as query param
     sseConnection = new EventSource(`${API_BASE}/api/events?token=${authToken}`);
     const connection = sseConnection;
 
@@ -365,9 +371,7 @@ function connectSSE() {
 function navigate(hash) {
     const path = hash.replace('#', '') || '/';
     const routeChanged = !currentRouteInitialized || path !== currentPage;
-    if (routeChanged) {
-        closeRouteModals();
-    }
+    if (routeChanged) closeRouteModals();
     currentPage = path;
     currentRouteInitialized = true;
 
@@ -420,6 +424,7 @@ document.addEventListener('click', (e) => {
                 loadRunDetail(actionButton.dataset.taskId || '', actionButton.dataset.runId || '');
                 break;
             case 'retry-refresh':
+            case 'quick-refresh':
                 refreshAll({ forceRender: true });
                 break;
             case 'retry-health':
@@ -440,6 +445,9 @@ document.addEventListener('click', (e) => {
             case 'retry-task-dependencies':
                 loadTaskDependencies(actionButton.dataset.taskId || '', { force: true });
                 loadTaskDependents(actionButton.dataset.taskId || '', { force: true });
+                break;
+            case 'quick-import':
+                promptImportTask();
                 break;
         }
         return;
@@ -467,11 +475,8 @@ document.addEventListener('click', (e) => {
 
 function renderCurrentPage(options = {}) {
     const render = () => renderCurrentPageContent();
-    if (options.preserveScroll === false) {
-        render();
-    } else {
-        mutatePreservingContentScroll(render);
-    }
+    if (options.preserveScroll === false) render();
+    else mutatePreservingContentScroll(render);
     if (options.resetScroll) resetContentScroll();
 }
 
@@ -479,14 +484,15 @@ function renderCurrentPageContent() {
     const content = document.getElementById('content');
     const path = currentPage;
 
-    if (path === '/' || path === '/dashboard') content.innerHTML = renderDashboard();
-    else if (path === '/tasks') content.innerHTML = renderTaskList();
-    else if (path.startsWith('/tasks/') && path.includes('/runs/')) {
+    if (path === '/' || path === '/dashboard') {
+        content.innerHTML = renderDashboard();
+    } else if (path === '/tasks') {
+        content.innerHTML = renderTaskList();
+    } else if (path.startsWith('/tasks/') && path.includes('/runs/')) {
         content.innerHTML = renderRunDetail(path);
         const parts = path.split('/');
         loadRunDetail(parts[2], parts[4]);
-    }
-    else if (path.startsWith('/tasks/')) {
+    } else if (path.startsWith('/tasks/')) {
         const taskID = path.split('/')[2];
         content.innerHTML = renderTaskDetail(path);
         loadTaskDetail(taskID);
@@ -494,15 +500,18 @@ function renderCurrentPageContent() {
         loadTaskEnvironment(taskID);
         loadTaskDependencies(taskID);
         loadTaskDependents(taskID);
-    }
-    else if (path === '/health') {
+    } else if (path === '/health') {
         content.innerHTML = renderHealth();
         loadHealth();
+    } else if (path === '/delivery') {
+        content.innerHTML = renderDelivery();
+    } else if (path === '/commands') {
+        content.innerHTML = renderCommands();
+    } else if (path === '/settings') {
+        content.innerHTML = renderSettings();
+    } else {
+        content.innerHTML = '<div class="empty-state"><h3>Page not found</h3></div>';
     }
-    else if (path === '/delivery') content.innerHTML = renderDelivery();
-    else if (path === '/commands') content.innerHTML = renderCommands();
-    else if (path === '/settings') content.innerHTML = renderSettings();
-    else content.innerHTML = '<div class="empty-state"><h3>Page not found</h3></div>';
 }
 
 function resetContentScroll() {
@@ -598,9 +607,7 @@ function restoreContentScrollState(state) {
             restoredAnchor = true;
         }
     }
-    if (!restoredAnchor) {
-        content.scrollTop = state.scrollTop;
-    }
+    if (!restoredAnchor) content.scrollTop = state.scrollTop;
     content.scrollLeft = state.scrollLeft;
     for (const nested of state.nestedScrollPositions || []) {
         const el = content.querySelector(nested.selector);
@@ -658,6 +665,502 @@ function updateCurrentPage(changes = {}) {
     renderCurrentPage();
 }
 
+// ===== Shared UI Helpers =====
+
+function renderPageIntro(eyebrow, title, description, actionsHTML = '') {
+    return `
+        <div class="page-intro">
+            <div>
+                <span class="page-intro-eyebrow">${esc(eyebrow)}</span>
+                <h1>${esc(title)}</h1>
+                <p>${esc(description)}</p>
+            </div>
+            ${actionsHTML ? `<div class="page-intro-actions">${actionsHTML}</div>` : ''}
+        </div>
+    `;
+}
+
+function renderSectionHeader(title, description, actionHTML = '') {
+    return `
+        <div class="dashboard-section-header">
+            <div>
+                <h2>${esc(title)}</h2>
+                <p>${esc(description)}</p>
+            </div>
+            ${actionHTML}
+        </div>
+    `;
+}
+
+function renderPageLinkButton(hash, label, classes = 'btn btn-sm') {
+    return `<a class="${classes}" href="${attr(hash)}" onclick="goToHash('${String(hash).replace(/'/g, "\\'")}');return false;">${esc(label)}</a>`;
+}
+
+function renderActionButton(label, onclick, classes = 'btn btn-sm', title = '') {
+    return `<button class="${classes}"${title ? ` title="${attr(title)}"` : ''} onclick="${onclick}">${esc(label)}</button>`;
+}
+
+function renderDangerActionButton(label, onclick, title = '') {
+    return renderActionButton(label, onclick, 'btn btn-sm btn-danger', title);
+}
+
+function renderPrimaryActionButton(label, onclick, title = '') {
+    return renderActionButton(label, onclick, 'btn btn-primary', title);
+}
+
+function renderInlineActionRow(actions) {
+    const safe = (actions || []).filter(Boolean);
+    if (!safe.length) return '';
+    return `<div class="card-actions">${safe.join('')}</div>`;
+}
+
+function renderEmptyState(icon, title, description) {
+    return `<div class="empty-state"><div class="icon">${esc(icon)}</div><h3>${esc(title)}</h3><p>${esc(description)}</p></div>`;
+}
+
+function renderMonoValue(value) {
+    return `<span class="mono-value">${esc(value)}</span>`;
+}
+
+function renderKeyValueRow(label, value) {
+    return `<div class="manifest-row"><span class="label">${esc(label)}</span><span class="value">${esc(value)}</span></div>`;
+}
+
+function renderCodeBlock(text, options = {}) {
+    const maxHeight = options.maxHeight ? ` style="max-height:${attr(options.maxHeight)}"` : '';
+    return `<div class="log-block"${maxHeight}>${esc(text || '')}</div>`;
+}
+
+function renderModalFrame(id, title, bodyHTML, actionsHTML, extraClasses = '') {
+    return `
+        <div id="${attr(id)}">
+            <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
+                <div class="modal ${extraClasses}">
+                    <h2>${esc(title)}</h2>
+                    ${bodyHTML}
+                    <div class="modal-actions">${actionsHTML}</div>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function setModalHTML(containerId, html) {
+    const el = document.getElementById(containerId);
+    if (el) el.innerHTML = html;
+}
+
+function removeElementById(id) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+}
+
+function createBodyModal(id, html) {
+    const existing = document.getElementById(id);
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = id;
+    div.innerHTML = html;
+    document.body.appendChild(div);
+    return div;
+}
+
+function focusIfPresent(id) {
+    const el = document.getElementById(id);
+    if (el) el.focus();
+}
+
+function setFieldError(input, hasError) {
+    if (!input) return;
+    input.style.borderColor = hasError ? 'var(--danger)' : '';
+}
+
+function hideMessage(el) {
+    if (!el) return;
+    el.style.display = 'none';
+    el.textContent = '';
+}
+
+function showMessage(el, message) {
+    if (!el) return;
+    el.textContent = message;
+    el.style.display = 'block';
+}
+
+function withStopPropagation(attrs = '') {
+    return `${attrs} onclick="event.preventDefault();event.stopPropagation()"`;
+}
+
+function modalCloseButton(targetExpression = 'this.closest(\'.modal-overlay\').parentElement.remove()') {
+    return renderActionButton('Cancel', targetExpression, 'btn');
+}
+
+function renderDestructiveTextButton(label, onclick) {
+    return `<button class="btn btn-sm btn-text-danger" onclick="${onclick}">${esc(label)}</button>`;
+}
+
+function renderStatusPill(label, badgeClass) {
+    return `<span class="badge ${badgeClass}">${esc(label)}</span>`;
+}
+
+function renderStateBadge(label, className) {
+    return `<span class="task-state-label ${className}">${esc(label)}</span>`;
+}
+
+function renderSectionActionButtons(actions) {
+    const safe = (actions || []).filter(Boolean);
+    if (!safe.length) return '';
+    return `<div class="page-intro-actions">${safe.join('')}</div>`;
+}
+
+function renderFormGroup(label, controlHTML) {
+    return `<div class="form-group"><label class="form-label">${esc(label)}</label>${controlHTML}</div>`;
+}
+
+function renderCheckboxRow(id, label, checked = false, extraStyle = '') {
+    return `<label class="checkbox-row"${extraStyle ? ` style="${extraStyle}"` : ''}><input type="checkbox" id="${attr(id)}" ${checked ? 'checked' : ''} /><span>${esc(label)}</span></label>`;
+}
+
+function renderWizardSteps(steps, currentIndex = 0, doneIndexes = []) {
+    return `<div class="wizard-steps">${steps.map((step, index) => `<span class="${doneIndexes.includes(index) ? 'done' : index === currentIndex ? 'current' : ''}">${esc(step)}</span>`).join('')}</div>`;
+}
+
+function renderDangerInlineText(text) {
+    return `<span class="delivery-error">${esc(text)}</span>`;
+}
+
+function renderMutedText(text) {
+    return `<p class="muted-copy">${esc(text)}</p>`;
+}
+
+function renderSectionCard(title, bodyHTML) {
+    return `<div class="detail-card"><h3>${esc(title)}</h3>${bodyHTML}</div>`;
+}
+
+function escapeJSString(value) {
+    return String(value || '').replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
+function navTo(hash) {
+    return `goToHash('${escapeJSString(hash)}');return false;`;
+}
+
+function stopAndRun(js) {
+    return `event.preventDefault();event.stopPropagation();${js}`;
+}
+
+function renderActionLink(hash, label, classes = 'btn btn-sm') {
+    return `<a class="${classes}" href="${attr(hash)}" onclick="${navTo(hash)}">${esc(label)}</a>`;
+}
+
+function renderFormActionButton(label, onclick, primary = false) {
+    return renderActionButton(label, onclick, primary ? 'btn btn-primary' : 'btn');
+}
+
+function renderIconEmptyState(icon, title, description) {
+    return renderEmptyState(icon, title, description);
+}
+
+function renderSmallMetaChips(items) {
+    const safe = (items || []).filter(Boolean);
+    if (!safe.length) return '';
+    return `<div class="task-secondary-meta">${safe.map(item => `<span>${esc(item)}</span>`).join('')}</div>`;
+}
+
+function renderQuickFacts(items) {
+    const safe = (items || []).filter(Boolean);
+    if (!safe.length) return '';
+    return `<div class="task-quick-facts">${safe.map(item => `<span>${esc(item)}</span>`).join('')}</div>`;
+}
+
+function renderActionToolbar(actions) {
+    const safe = (actions || []).filter(Boolean);
+    if (!safe.length) return '';
+    return `<div class="detail-actions">${safe.join('')}</div>`;
+}
+
+function renderPanelBody(html) {
+    return html || '';
+}
+
+function renderIconBadge(icon, text, badgeClass = 'badge-muted') {
+    return `<span class="badge ${badgeClass}">${esc(icon)} ${esc(text)}</span>`;
+}
+
+function renderTextButton(label, onclick) {
+    return renderActionButton(label, onclick, 'btn btn-sm');
+}
+
+function renderPrimarySmallButton(label, onclick) {
+    return renderActionButton(label, onclick, 'btn btn-sm btn-primary');
+}
+
+function renderDangerSmallButton(label, onclick) {
+    return renderActionButton(label, onclick, 'btn btn-sm btn-danger');
+}
+
+function renderWideModal(id, title, bodyHTML, actionsHTML) {
+    return renderModalFrame(id, title, bodyHTML, actionsHTML, 'modal-wide');
+}
+
+function renderStandardModal(id, title, bodyHTML, actionsHTML) {
+    return renderModalFrame(id, title, bodyHTML, actionsHTML);
+}
+
+function renderToolbar(actions) {
+    return renderInlineActionRow(actions);
+}
+
+function renderModalActions(actions) {
+    const safe = (actions || []).filter(Boolean);
+    return safe.join('');
+}
+
+function renderErrorMessage(message) {
+    return renderDangerInlineText(message);
+}
+
+function renderInfoCodeBlock(text) {
+    return renderCodeBlock(text, { maxHeight: 'none' });
+}
+
+function renderActionBadge(text, tone = 'neutral') {
+    return renderStatusSummaryBadge('Action', text, tone);
+}
+
+function renderHelperSpacer() {
+    return '';
+}
+
+function renderOneLineCard(content) {
+    return `<div class="detail-card">${content}</div>`;
+}
+
+function renderRowLabelValue(label, value) {
+    return renderKeyValueRow(label, value);
+}
+
+function renderStringList(items) {
+    return (items || []).map(item => esc(item)).join(', ');
+}
+
+function renderSafeHTML(html) {
+    return html || '';
+}
+
+function renderInputValue(value) {
+    return attr(value || '');
+}
+
+function renderButtonRow(actions) {
+    return `<div class="modal-actions">${renderModalActions(actions)}</div>`;
+}
+
+function renderTopActions(actions) {
+    return renderSectionActionButtons(actions);
+}
+
+function renderPanel(title, description, bodyHTML, options = {}) {
+    return renderResourcePanel(title, description, bodyHTML, options);
+}
+
+function renderDetailPanel(title, description, bodyHTML, options = {}) {
+    return renderDetailSection(title, description, bodyHTML, options);
+}
+
+function renderListPanel(title, description, bodyHTML, options = {}) {
+    return renderDataListSection(title, description, bodyHTML, options);
+}
+
+function renderNoop() {
+    return '';
+}
+
+function renderStaticValue(value) {
+    return esc(value || '');
+}
+
+function renderCopyButton(text, onclick) {
+    return renderActionButton(text, onclick, 'btn btn-sm');
+}
+
+function renderClosePrimaryButton(onclick) {
+    return renderActionButton('Close', onclick, 'btn btn-primary');
+}
+
+function renderCancelButton(onclick) {
+    return renderActionButton('Cancel', onclick, 'btn');
+}
+
+function renderCreateButton(onclick) {
+    return renderActionButton('Create', onclick, 'btn btn-primary');
+}
+
+function renderSaveButton(onclick) {
+    return renderActionButton('Save', onclick, 'btn btn-primary');
+}
+
+function renderBrowseButton(onclick) {
+    return renderActionButton('Browse', onclick, 'btn');
+}
+
+function renderRefreshButton(onclick) {
+    return renderActionButton('Refresh', onclick, 'btn btn-sm');
+}
+
+function renderLoadButton(onclick) {
+    return renderActionButton('Load', onclick, 'btn btn-sm');
+}
+
+function renderRebuildButton(onclick) {
+    return renderActionButton('Rebuild', onclick, 'btn btn-sm btn-danger');
+}
+
+function renderResetButton(onclick) {
+    return renderActionButton('Reset', onclick, 'btn btn-sm');
+}
+
+function renderCleanupButton(onclick) {
+    return renderActionButton('Cleanup Now', onclick, 'btn btn-sm');
+}
+
+function renderImportButton(onclick) {
+    return renderActionButton('Import', onclick, 'btn btn-primary');
+}
+
+function renderCheckButton(onclick) {
+    return renderActionButton('Diagnostic Check', onclick, 'btn');
+}
+
+function renderRunNowButton(onclick) {
+    return renderActionButton('▶ Run Now', onclick, 'btn btn-primary');
+}
+
+function renderPreviewButton(onclick) {
+    return renderActionButton('Preview Delivery', onclick, 'btn');
+}
+
+function renderReloadButton(onclick) {
+    return renderActionButton('Reload Manifest', onclick, 'btn');
+}
+
+function renderToggleButton(label, onclick) {
+    return renderActionButton(label, onclick, 'btn');
+}
+
+function renderRemoveButton(onclick) {
+    return renderActionButton('Remove Import', onclick, 'btn btn-sm btn-danger');
+}
+
+function renderQuickImportButton() {
+    return renderActionButton('+ Import Task', 'promptImportTask()', 'btn btn-primary');
+}
+
+function renderRefreshDataButton() {
+    return renderActionButton('Refresh Data', 'refreshAll({ forceRender: true })', 'btn');
+}
+
+function renderSummaryStrip(items) {
+    const safeItems = (items || []).filter(Boolean);
+    if (!safeItems.length) return '';
+    return `
+        <div class="summary-strip">
+            ${safeItems.map(item => `
+                <div class="summary-chip">
+                    <span>${esc(item.label || '')}</span>
+                    <strong>${esc(item.value || '')}</strong>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderMetadataList(items) {
+    return `
+        <div class="metadata-list">
+            ${(items || []).filter(item => item && item.label).map(item => `
+                <div class="metadata-item">
+                    <span class="metadata-label">${esc(item.label)}</span>
+                    <strong class="metadata-value">${esc(item.value || 'N/A')}</strong>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+function renderDataListSection(title, description, bodyHTML, options = {}) {
+    return `
+        <section class="data-section">
+            ${renderSectionHeader(title, description, options.actionHTML || '')}
+            ${options.summaryHTML || ''}
+            ${bodyHTML}
+        </section>
+    `;
+}
+
+function renderResourcePanel(title, description, bodyHTML, options = {}) {
+    return `
+        <section class="resource-panel${options.tone ? ` resource-panel-${esc(options.tone)}` : ''}">
+            <div class="resource-panel-header">
+                <div>
+                    <h3>${esc(title)}</h3>
+                    <p>${esc(description)}</p>
+                </div>
+                ${options.badgeHTML || ''}
+            </div>
+            ${options.summaryHTML || ''}
+            ${bodyHTML}
+        </section>
+    `;
+}
+
+function renderDetailSection(title, description, bodyHTML, options = {}) {
+    return `
+        <section class="detail-section${options.compact ? ' detail-section-compact' : ''}">
+            <div class="detail-section-header">
+                <div>
+                    <h2>${esc(title)}</h2>
+                    <p>${esc(description)}</p>
+                </div>
+                ${options.actionHTML || ''}
+            </div>
+            ${options.summaryHTML || ''}
+            ${bodyHTML}
+        </section>
+    `;
+}
+
+function renderEmptyPanel(icon, title, description) {
+    return `
+        <div class="empty-panel">
+            <div class="empty-panel-icon">${esc(icon)}</div>
+            <div>
+                <h3>${esc(title)}</h3>
+                <p>${esc(description)}</p>
+            </div>
+        </div>
+    `;
+}
+
+function renderStatusSummaryBadge(label, value, tone = 'neutral') {
+    return `<span class="summary-badge summary-badge-${tone}"><span>${esc(label)}</span><strong>${esc(value)}</strong></span>`;
+}
+
+function formatCountLabel(count, singular, plural = `${singular}s`) {
+    const n = Number(count || 0);
+    return `${n} ${n === 1 ? singular : plural}`;
+}
+
+function formatShortPath(path) {
+    const text = String(path || '');
+    if (!text) return 'N/A';
+    return text.length > 72 ? `…${text.slice(-69)}` : text;
+}
+
+function connectionSummaryText() {
+    return appState.connected ? 'Live updates active' : 'Showing cached state while disconnected';
+}
+
 // ===== Dashboard =====
 
 function renderDashboard() {
@@ -670,41 +1173,68 @@ function renderDashboard() {
     `;
 }
 
+function renderDashboardHero(status, tasksSummary, enabledTasks) {
+    const nextRun = status.nextRun;
+    const nextRunText = nextRun ? `${esc(nextRun.taskName)} · ${formatTime(nextRun.scheduledAt)}` : 'No upcoming scheduled run yet';
+    const enabledCount = tasksSummary.enabled || 0;
+    const failureCount = status.recentFailures || 0;
+    return `
+        <div class="dashboard-hero">
+            <div>
+                <span class="dashboard-kicker">Power-user local automation</span>
+                <h2>Keep local tasks reliable, visible, and easy to control.</h2>
+                <p>${enabledCount} enabled task${enabledCount === 1 ? '' : 's'}${failureCount ? ` · ${failureCount} recent failure${failureCount === 1 ? '' : 's'}` : ' · No recent failures'}.</p>
+            </div>
+            <div class="dashboard-hero-meta">
+                <div class="dashboard-hero-item">
+                    <span>Next run</span>
+                    <strong>${nextRunText}</strong>
+                </div>
+                <div class="dashboard-hero-item">
+                    <span>Focus</span>
+                    <strong>${enabledTasks.length ? `${enabledTasks.length} scheduled task${enabledTasks.length === 1 ? '' : 's'}` : 'Import your first task'}</strong>
+                </div>
+            </div>
+        </div>
+    `;
+}
+
+function renderRecentTasksSection(tasks) {
+    return renderDataListSection(
+        'Recent Tasks',
+        'The latest imported tasks and their current state.',
+        tasks.length ? renderTaskCards(tasks) : '<div class="empty-state"><div class="icon">📋</div><h3>No tasks yet</h3><p>Import a task package to get started.</p></div>',
+        {
+            actionHTML: '<a class="btn btn-sm" href="#/tasks" onclick="goToHash(\'#/tasks\');return false;">View All Tasks</a>'
+        }
+    );
+}
+
+function renderDashboardBody(s, t, enabledTasks, attentionItems, recentTasks) {
+    return `
+        ${renderDashboardHero(s, t, enabledTasks)}
+        <div class="stats-grid">
+            <div class="stat-card"><div class="stat-label">Total Tasks</div><div class="stat-value">${t.total || 0}</div></div>
+            <div class="stat-card"><div class="stat-label">Enabled</div><div class="stat-value success">${t.enabled || 0}</div></div>
+            <div class="stat-card"><div class="stat-label">Disabled</div><div class="stat-value">${t.disabled || 0}</div></div>
+            <div class="stat-card"><div class="stat-label">Recent Failures</div><div class="stat-value ${(s.recentFailures || 0) > 0 ? 'danger' : 'success'}">${s.recentFailures || 0}</div></div>
+        </div>
+        ${renderAttentionItems(attentionItems)}
+        ${renderRecentTasksSection(recentTasks)}
+    `;
+}
+
 function renderDashboardContent() {
     const s = appState.status || {};
     const t = s.tasks || {};
-    return `
-        <div class="stats-grid">
-            <div class="stat-card">
-                <div class="stat-label">Total Tasks</div>
-                <div class="stat-value">${t.total || 0}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Enabled</div>
-                <div class="stat-value success">${t.enabled || 0}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Disabled</div>
-                <div class="stat-value">${t.disabled || 0}</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-label">Recent Failures</div>
-                <div class="stat-value ${(s.recentFailures||0) > 0 ? 'danger' : 'success'}">${s.recentFailures || 0}</div>
-            </div>
-        </div>
-        ${renderAttentionItems(s.attentionItems || [])}
-        ${s.nextRun ? `
-        <div class="stat-card" style="margin-bottom:24px">
-            <div class="stat-label">Next Scheduled Run</div>
-            <p style="font-size:16px;margin-top:8px">
-                <strong>${esc(s.nextRun.taskName)}</strong>
-                &mdash; ${formatTime(s.nextRun.scheduledAt)}
-            </p>
-        </div>` : ''}
-        <h2 style="font-size:18px;margin-bottom:16px">Recent Tasks</h2>
-        ${renderTaskCards(appState.tasks.slice(0, 5))}
-    `;
+    const tasks = appState.tasks || [];
+    const recentTasks = tasks.slice(0, 5);
+    const enabledTasks = tasks.filter(task => task.enabled);
+    const attentionItems = s.attentionItems || [];
+    return renderDashboardBody(s, t, enabledTasks, attentionItems, recentTasks);
 }
+
+// ===== Attention =====
 
 function renderAttentionItems(items) {
     if (!items.length) {
@@ -753,25 +1283,122 @@ function attentionClickHandler(item) {
 
 // ===== Tasks =====
 
+function taskQuickSummary(task) {
+    if (task.running) return 'Running now';
+    if (!task.enabled) return 'Disabled';
+    if (task.nextRun) return `Next ${formatTime(task.nextRun)}`;
+    return 'No next run';
+}
+
+function taskDeliverySummary(task) {
+    const delivery = task.manifest?.delivery || {};
+    const profiles = delivery.profiles || [];
+    if (!profiles.length) return 'No delivery profiles';
+    return `${profiles.length} profile${profiles.length === 1 ? '' : 's'} · ${(delivery.sendOn || []).join(', ') || 'default rules'}`;
+}
+
+function taskDependencySummary(task) {
+    const dependencies = task.manifest?.dependencies?.tasks || [];
+    if (!dependencies.length) return 'No dependency gates';
+    return formatCountLabel(dependencies.length, 'dependency');
+}
+
+function taskRuntimeSummary(task) {
+    const runtime = task.manifest?.runtime || {};
+    const strategy = runtime.environment?.strategy || 'system';
+    const timeout = runtime.timeoutSeconds || 120;
+    return `${strategy} · ${timeout}s timeout`;
+}
+
+function taskManifestSummary(task) {
+    const status = task.manifestStatus || {};
+    if (status.error) return 'Manifest needs reload';
+    if (status.changed) return 'Disk manifest changed';
+    return 'Manifest current';
+}
+
+function taskHealthTone(task) {
+    if (task.running) return 'warning';
+    if (!task.enabled) return 'neutral';
+    if (task.lastRun && task.lastRun.status !== 'success') return 'danger';
+    return 'success';
+}
+
 function renderTaskList() {
     return `
-        <div class="page-header" style="display:flex;justify-content:space-between;align-items:start">
-            <div>
-                <h1>Tasks</h1>
-                <p>Manage your automation scripts</p>
-            </div>
-            <button class="btn btn-primary" onclick="promptImportTask()">+ Import Task</button>
-        </div>
+        ${renderPageIntro(
+            'Task packages',
+            'Tasks',
+            'Manage imported automations, inspect their current state, and jump into detailed diagnostics.',
+            '<button class="btn btn-primary" onclick="promptImportTask()">+ Import Task</button>'
+        )}
         <div id="task-list-content">${renderTaskListContent()}</div>
     `;
 }
 
+function renderTaskListSummary(tasks) {
+    const runningCount = tasks.filter(task => task.running).length;
+    const attentionCount = tasks.filter(task => task.lastRun && task.lastRun.status !== 'success' && task.enabled).length;
+    return renderSummaryStrip([
+        { label: 'Visible now', value: formatCountLabel(tasks.length, 'task') },
+        { label: 'Running', value: formatCountLabel(runningCount, 'task') },
+        { label: 'Needs attention', value: formatCountLabel(attentionCount, 'task') }
+    ]);
+}
+
+function renderTaskCardsSection(tasks) {
+    return renderDataListSection(
+        'Imported tasks',
+        'Use this list as the operational front door into every task package CronPlus knows about.',
+        tasks.length === 0
+            ? '<div class="empty-state"><div class="icon">📋</div><h3>No tasks yet</h3><p>Import a task package to get started.</p></div>'
+            : renderTaskCards(tasks),
+        { summaryHTML: renderTaskListSummary(tasks) }
+    );
+}
+
 function renderTaskListContent() {
+    return renderTaskCardsSection(appState.tasks || []);
+}
+
+function renderTaskQuickFacts(task) {
     return `
-        ${appState.tasks.length === 0 ?
-            '<div class="empty-state"><div class="icon">📋</div><h3>No tasks yet</h3><p>Import a task package to get started.</p></div>' :
-            renderTaskCards(appState.tasks)
-        }
+        <div class="task-quick-facts">
+            <span>${esc(taskQuickSummary(task))}</span>
+            <span>${esc(taskRuntimeSummary(task))}</span>
+            <span>${esc(taskDependencySummary(task))}</span>
+            <span>${esc(taskDeliverySummary(task))}</span>
+        </div>
+    `;
+}
+
+function renderTaskSecondaryMeta(task) {
+    const parts = [];
+    parts.push(taskManifestSummary(task));
+    if (task.packageDir) parts.push(`Path ${formatShortPath(task.packageDir)}`);
+    if (task.environmentSetup?.state) parts.push(`Env ${task.environmentSetup.state}`);
+    return `<div class="task-secondary-meta">${parts.map(part => `<span>${esc(part)}</span>`).join('')}</div>`;
+}
+
+function renderTaskCardActions(task) {
+    return `
+        <div class="task-actions" onclick="event.preventDefault();event.stopPropagation()">
+            <button class="btn btn-sm" onclick="toggleTask('${task.id}', ${!task.enabled})">${task.enabled ? 'Disable' : 'Enable'}</button>
+            <button class="btn btn-sm btn-primary" onclick="runTask('${task.id}')">▶ Run</button>
+        </div>
+    `;
+}
+
+function renderTaskStatusMeta(task) {
+    const lr = task.lastRun;
+    return `
+        <div class="task-meta">
+            ${esc(task.scheduleSummary || 'No schedule')}
+            ${task.nextRun ? `· Next: ${formatTime(task.nextRun)}` : ''}
+            ${task.manifestStatus?.changed ? '· <span class="badge badge-warning">manifest changed</span>' : ''}
+            ${renderEnvironmentSetupBadge(task.environmentSetup)}
+            ${lr ? `· Last: <span class="badge badge-${runStatusBadge(lr.status)}">${esc(lr.status)}</span>` : ''}
+        </div>
     `;
 }
 
@@ -779,27 +1406,21 @@ function renderTaskCards(tasks) {
     return `<div class="task-list">${tasks.map(t => {
         const lr = t.lastRun;
         const taskState = taskListState(t, lr);
+        const tone = taskHealthTone(t);
 
         return `
-        <div class="task-row${t.running ? ' is-running' : ''}" data-scroll-key="task-row:${attr(t.id)}" role="link" tabindex="0" onclick="window.location.hash='#/tasks/${t.id}'" onkeydown="if(event.key==='Enter')window.location.hash='#/tasks/${t.id}'">
+        <div class="task-row task-row-${tone}${t.running ? ' is-running' : ''}" data-scroll-key="task-row:${attr(t.id)}" role="link" tabindex="0" onclick="window.location.hash='#/tasks/${t.id}'" onkeydown="if(event.key==='Enter')window.location.hash='#/tasks/${t.id}'">
             <div class="task-status-dot ${taskState.className}" title="${attr(taskState.label)}" aria-label="${attr(taskState.label)}"></div>
             <div class="task-info">
                 <div class="task-title-row">
                     <div class="task-name">${esc(t.name)}</div>
                     <span class="task-state-label task-state-${taskState.className}">${esc(taskState.label)}</span>
                 </div>
-                <div class="task-meta">
-                    ${esc(t.scheduleSummary || 'No schedule')}
-                    ${t.nextRun ? `· Next: ${formatTime(t.nextRun)}` : ''}
-                    ${t.manifestStatus?.changed ? '· <span class="badge badge-warning">manifest changed</span>' : ''}
-                    ${renderEnvironmentSetupBadge(t.environmentSetup)}
-                    ${lr ? `· Last: <span class="badge badge-${runStatusBadge(lr.status)}">${esc(lr.status)}</span>` : ''}
-                </div>
+                ${renderTaskStatusMeta(t)}
+                ${renderTaskQuickFacts(t)}
+                ${renderTaskSecondaryMeta(t)}
             </div>
-            <div class="task-actions" onclick="event.preventDefault();event.stopPropagation()">
-                <button class="btn btn-sm" onclick="toggleTask('${t.id}', ${!t.enabled})">${t.enabled ? 'Disable' : 'Enable'}</button>
-                <button class="btn btn-sm btn-primary" onclick="runTask('${t.id}')">▶ Run</button>
-            </div>
+            ${renderTaskCardActions(t)}
         </div>`;
     }).join('')}</div>`;
 }
@@ -813,20 +1434,98 @@ function taskListState(task, lastRun) {
 
 // ===== Task Detail =====
 
-function renderTaskDetail(path) {
-    const id = path.split('/')[2];
-    const task = appState.taskDetails[id] || appState.tasks.find(t => t.id === id);
-    if (!task) {
-        if (appState.taskDetailErrors[id]) {
-            return `<div class="empty-state"><h3>${esc(appState.taskDetailErrors[id])}</h3></div>`;
-        }
-        return '<div class="empty-state"><h3>Loading task...</h3></div>';
-    }
+function renderTaskOverviewSummary(task) {
+    return renderSummaryStrip([
+        { label: 'State', value: task.enabled ? 'Enabled' : 'Disabled' },
+        { label: 'Schedule', value: task.scheduleSummary || 'No schedule' },
+        { label: 'Runtime', value: taskRuntimeSummary(task) },
+        { label: 'Delivery', value: taskDeliverySummary(task) }
+    ]);
+}
 
+function renderTaskOverviewMetadata(task) {
+    return renderMetadataList([
+        { label: 'Current state', value: task.enabled ? 'Enabled' : 'Disabled' },
+        { label: 'Manifest', value: taskManifestSummary(task) },
+        { label: 'Environment', value: task.environmentSetup?.state || 'unknown' }
+    ]);
+}
+
+function renderRunHistorySummary(task) {
+    return task.timeline ? renderSummaryStrip([
+        { label: 'Total runs', value: String(task.timeline.totalRuns || 0) },
+        { label: 'Last run', value: formatTime(task.timeline.lastRunAt) || 'Never' },
+        { label: 'Failure streak', value: String(task.timeline.consecutiveFailures || 0) }
+    ]) : '';
+}
+
+function renderTaskManifestSummaryBlock(task) {
+    return renderMetadataList([
+        { label: 'Loaded', value: formatTime(task.manifestStatus?.lastReloadedAt) || 'Never' },
+        { label: 'Disk state', value: task.manifestStatus?.changed ? 'changed' : 'current' },
+        { label: 'Modified', value: formatTime(task.manifestStatus?.currentModifiedAt) || 'Unknown' }
+    ]);
+}
+
+function renderTaskRuntimeSummaryBlock(task) {
+    return renderMetadataList([
+        { label: 'Strategy', value: task.manifest.runtime?.environment?.strategy || 'system' },
+        { label: 'Timeout', value: `${task.manifest.runtime?.timeoutSeconds || 120}s` },
+        { label: 'Max output', value: `${task.manifest.runtime?.maxOutputKB || 512}KB` },
+        { label: 'Run isolation', value: task.manifest.runtime?.isolatedRun === false ? 'off' : 'on' }
+    ]);
+}
+
+function renderPackagePathBlock(task) {
+    return `<div class="package-path-block">${esc(task.packageDir || 'N/A')}</div>`;
+}
+
+function renderTaskScheduleSection(task, id) {
+    return renderResourcePanel('Schedule', 'See cadence, next run timing, and a quick preview of upcoming executions.', renderScheduleCard(task, id));
+}
+
+function renderTaskEnvironmentSection(task, id) {
+    return renderResourcePanel('Environment', 'Inspect the execution environment and rebuild it when CronPlus manages the venv.', renderTaskEnvironmentCard(task, appState.taskEnvironments[id]));
+}
+
+function renderTaskDependenciesSection(task, id) {
+    return renderResourcePanel('Dependencies', 'Review upstream dependency health and which tasks depend on this one.', renderTaskDependenciesCard(task, appState.dependencyHealth[id], appState.taskDependents[id]));
+}
+
+function renderTaskManifestSection(task) {
+    return renderResourcePanel('Manifest', 'Check whether the loaded manifest matches what is on disk.', `<div class="detail-card">${renderTaskManifestSummaryBlock(task)}${task.manifestStatus?.error ? `<div class="delivery-error">${esc(task.manifestStatus.error)}</div>` : ''}</div>`);
+}
+
+function renderTaskTimelineSection(task) {
+    if (!task.timeline) return '';
+    return renderResourcePanel('Timeline', 'Track long-term execution cadence and recent reliability signals.', `<div class="detail-card">${renderMetadataList([
+        { label: 'Runs', value: String(task.timeline.totalRuns || 0) },
+        { label: 'Last run', value: formatTime(task.timeline.lastRunAt) || 'Never' },
+        { label: 'Last success', value: formatTime(task.timeline.lastSuccessAt) || 'Never' },
+        { label: 'Last failure', value: formatTime(task.timeline.lastFailureAt) || 'Never' },
+        { label: 'Avg duration', value: formatDurationMs(task.timeline.averageDurationMs) },
+        { label: 'Failure streak', value: String(task.timeline.consecutiveFailures || 0) }
+    ])}</div>`);
+}
+
+function renderTaskRuntimeSection(task) {
+    if (!task.manifest) return '';
+    return renderResourcePanel('Runtime', 'Core runtime policy for the task package.', `<div class="detail-card">${renderTaskRuntimeSummaryBlock(task)}${task.manifest.runtime?.resourceLimits?.maxOpenFiles ? `<div class="manifest-row"><span class="label">Open Files</span><span class="value">${task.manifest.runtime.resourceLimits.maxOpenFiles}</span></div>` : ''}${task.manifest.runtime?.resourceLimits?.maxProcesses ? `<div class="manifest-row"><span class="label">Processes</span><span class="value">${task.manifest.runtime.resourceLimits.maxProcesses}</span></div>` : ''}${task.manifest.runtime?.resourceLimits?.maxCPUSeconds ? `<div class="manifest-row"><span class="label">CPU Limit</span><span class="value">${task.manifest.runtime.resourceLimits.maxCPUSeconds}s</span></div>` : ''}${task.manifest.runtime?.resourceLimits?.maxMemoryMB ? `<div class="manifest-row"><span class="label">Memory</span><span class="value">${task.manifest.runtime.resourceLimits.maxMemoryMB}MB</span></div>` : ''}${(task.manifest.delivery?.profiles||[]).length > 0 ? `<div class="manifest-row"><span class="label">Delivery</span><span class="value">${task.manifest.delivery.profiles.length} profile(s)</span></div>` : ''}${(task.manifest.delivery?.sendOn||[]).length > 0 ? `<div class="manifest-row"><span class="label">Send On</span><span class="value">${esc(task.manifest.delivery.sendOn.join(', '))}</span></div>` : ''}</div>`);
+}
+
+function renderTaskPackageSection(task) {
+    return renderResourcePanel('Package directory', 'Filesystem location of the imported task package.', `<div class="detail-card">${renderPackagePathBlock(task)}</div>`);
+}
+
+function renderTaskDetailIntro(task, id) {
     return `
         <div class="detail-header" data-scroll-key="task-detail:${attr(id)}:header">
             <a href="#/tasks" class="back-link" onclick="goToHash('#/tasks');return false;">←</a>
-            <h1>${esc(task.name)}</h1>
+            <div class="detail-header-copy">
+                <span class="page-intro-eyebrow">Task package</span>
+                <h1>${esc(task.name)}</h1>
+                <p class="detail-header-summary">${esc(task.description || 'Inspect task health, runtime state, dependencies, and run history from one place.')}</p>
+            </div>
             <span class="badge badge-${task.enabled ? 'success' : 'muted'}">${task.enabled ? 'Enabled' : 'Disabled'}</span>
             ${task.manifestStatus?.changed ? '<span class="badge badge-warning">Manifest Changed</span>' : ''}
             ${renderEnvironmentSetupBadge(task.environmentSetup, true)}
@@ -839,64 +1538,48 @@ function renderTaskDetail(path) {
                 <button class="btn" style="color:var(--danger);border-color:var(--danger);" onclick="removeTaskImport('${id}')">Remove Import</button>
             </div>
         </div>
+        ${renderTaskOverviewSummary(task)}
+    `;
+}
+
+function renderTaskDetailMainSections(task, id) {
+    return `
+        ${renderDetailSection('Task overview', 'Start here for the package description and immediate operational context.', `<div class="detail-card task-overview-card" data-scroll-key="task-detail:${attr(id)}:description"><p>${esc(task.description || 'No description provided.')}</p></div>`, { summaryHTML: renderTaskOverviewMetadata(task) })}
+        <div id="task-check-result-${id}" data-scroll-key="task-detail:${attr(id)}:check">${appState.taskChecks[id] ? renderTaskPackageCheck(appState.taskChecks[id]) : ''}</div>
+        ${renderDetailSection('Run history', 'Review recent executions, filter failures, and drill into full run diagnostics.', `<div id="run-history-${id}" data-scroll-key="task-detail:${attr(id)}:run-history">${renderRunHistoryInitial(id)}</div>`, { summaryHTML: renderRunHistorySummary(task) })}
+    `;
+}
+
+function renderTaskDetailSidebarSections(task, id) {
+    return `
+        ${renderTaskScheduleSection(task, id)}
+        ${renderTaskEnvironmentSection(task, id)}
+        ${renderTaskDependenciesSection(task, id)}
+        ${renderTaskManifestSection(task)}
+        ${renderTaskTimelineSection(task)}
+        ${renderTaskRuntimeSection(task)}
+        ${renderTaskPackageSection(task)}
+    `;
+}
+
+function renderTaskDetail(path) {
+    const id = path.split('/')[2];
+    const task = appState.taskDetails[id] || appState.tasks.find(t => t.id === id);
+    if (!task) {
+        if (appState.taskDetailErrors[id]) {
+            return `<div class="empty-state"><h3>${esc(appState.taskDetailErrors[id])}</h3></div>`;
+        }
+        return '<div class="empty-state"><h3>Loading task...</h3></div>';
+    }
+
+    return `
+        ${renderTaskDetailIntro(task, id)}
         <div class="task-content-layout">
             <div class="task-main">
-                <div class="detail-card" data-scroll-key="task-detail:${attr(id)}:description" style="margin-bottom:32px;">
-                    <h3>Description</h3>
-                    <p style="font-size:15px;line-height:1.6;color:var(--text-primary)">${esc(task.description || 'No description provided.')}</p>
-                </div>
-                <div id="task-check-result-${id}" data-scroll-key="task-detail:${attr(id)}:check">
-                    ${appState.taskChecks[id] ? renderTaskPackageCheck(appState.taskChecks[id]) : ''}
-                </div>
-                
-                <h2 style="font-size:18px;margin-bottom:16px;">Run History</h2>
-                <div id="run-history-${id}" data-scroll-key="task-detail:${attr(id)}:run-history">${renderRunHistoryInitial(id)}</div>
+                ${renderTaskDetailMainSections(task, id)}
             </div>
-
             <div class="task-sidebar">
-                ${renderScheduleCard(task, id)}
-                ${renderTaskEnvironmentCard(task, appState.taskEnvironments[id])}
-                ${renderTaskDependenciesCard(task, appState.dependencyHealth[id], appState.taskDependents[id])}
-
-                <div class="detail-card">
-                    <h3>Manifest</h3>
-                    <div class="manifest-row"><span class="label">Loaded</span><span class="value">${formatTime(task.manifestStatus?.lastReloadedAt)}</span></div>
-                    <div class="manifest-row"><span class="label">Disk State</span><span class="value">${task.manifestStatus?.changed ? 'changed' : 'current'}</span></div>
-                    ${task.manifestStatus?.currentModifiedAt ? `<div class="manifest-row"><span class="label">Modified</span><span class="value">${formatTime(task.manifestStatus.currentModifiedAt)}</span></div>` : ''}
-                    ${task.manifestStatus?.error ? `<div class="delivery-error">${esc(task.manifestStatus.error)}</div>` : ''}
-                </div>
-
-                ${task.timeline ? `<div class="detail-card">
-                    <h3>Timeline</h3>
-                    <div class="manifest-row"><span class="label">Runs</span><span class="value">${task.timeline.totalRuns || 0}</span></div>
-                    <div class="manifest-row"><span class="label">Last Run</span><span class="value">${formatTime(task.timeline.lastRunAt)}</span></div>
-                    <div class="manifest-row"><span class="label">Last Success</span><span class="value">${formatTime(task.timeline.lastSuccessAt)}</span></div>
-                    <div class="manifest-row"><span class="label">Last Failure</span><span class="value">${formatTime(task.timeline.lastFailureAt)}</span></div>
-                    <div class="manifest-row"><span class="label">Avg Duration</span><span class="value">${formatDurationMs(task.timeline.averageDurationMs)}</span></div>
-                    <div class="manifest-row"><span class="label">Failure Streak</span><span class="value">${task.timeline.consecutiveFailures || 0}</span></div>
-                </div>` : ''}
-
-	                ${task.manifest ? `<div class="detail-card">
-	                    <h3>Runtime</h3>
-	                    <div class="manifest-row"><span class="label">Strategy</span><span class="value">${esc(task.manifest.runtime?.environment?.strategy || 'system')}</span></div>
-	                    <div class="manifest-row"><span class="label">Timeout</span><span class="value">${task.manifest.runtime?.timeoutSeconds || 120}s</span></div>
-	                    <div class="manifest-row"><span class="label">Max Output</span><span class="value">${task.manifest.runtime?.maxOutputKB || 512}KB</span></div>
-	                    <div class="manifest-row"><span class="label">Run Isolation</span><span class="value">${task.manifest.runtime?.isolatedRun === false ? 'off' : 'on'}</span></div>
-	                    <div class="manifest-row"><span class="label">Kill Grace</span><span class="value">${task.manifest.runtime?.resourceLimits?.gracefulKillSeconds || 5}s</span></div>
-	                    ${task.manifest.runtime?.resourceLimits?.maxOpenFiles ? `<div class="manifest-row"><span class="label">Open Files</span><span class="value">${task.manifest.runtime.resourceLimits.maxOpenFiles}</span></div>` : ''}
-	                    ${task.manifest.runtime?.resourceLimits?.maxProcesses ? `<div class="manifest-row"><span class="label">Processes</span><span class="value">${task.manifest.runtime.resourceLimits.maxProcesses}</span></div>` : ''}
-	                    ${task.manifest.runtime?.resourceLimits?.maxCPUSeconds ? `<div class="manifest-row"><span class="label">CPU Limit</span><span class="value">${task.manifest.runtime.resourceLimits.maxCPUSeconds}s</span></div>` : ''}
-	                    ${task.manifest.runtime?.resourceLimits?.maxMemoryMB ? `<div class="manifest-row"><span class="label">Memory</span><span class="value">${task.manifest.runtime.resourceLimits.maxMemoryMB}MB</span></div>` : ''}
-	                    ${(task.manifest.delivery?.profiles||[]).length > 0 ? `<div class="manifest-row"><span class="label">Delivery</span><span class="value">${task.manifest.delivery.profiles.length} profile(s)</span></div>` : ''}
-	                    ${(task.manifest.delivery?.sendOn||[]).length > 0 ? `<div class="manifest-row"><span class="label">Send On</span><span class="value">${esc(task.manifest.delivery.sendOn.join(', '))}</span></div>` : ''}
-	                </div>` : ''}
-                
-                <div class="detail-card">
-                    <h3>Package Directory</h3>
-                    <div style="background:rgba(0,0,0,0.3);padding:10px 14px;border-radius:6px;font-family:var(--font-mono);font-size:12px;word-break:break-all;border:1px solid var(--border);color:var(--text-secondary)">
-                        ${esc(task.packageDir || 'N/A')}
-                    </div>
-                </div>
+                ${renderTaskDetailSidebarSections(task, id)}
             </div>
         </div>
     `;
@@ -916,9 +1599,7 @@ async function loadTaskDetail(taskID, options = {}) {
     delete appState.taskDetailErrors[taskID];
     appState.taskDetails[taskID] = data;
     saveOfflineCache();
-    if (currentPage === `/tasks/${taskID}`) {
-        renderCurrentPage();
-    }
+    if (currentPage === `/tasks/${taskID}`) renderCurrentPage();
 }
 
 async function loadTaskEnvironment(taskID, options = {}) {
@@ -959,10 +1640,7 @@ function renderScheduleCard(task, taskID) {
             <div class="schedule-expression">${esc(task.scheduleSummary || 'N/A')}</div>
             ${task.nextRun ? `<p class="schedule-next"><span class="task-status-dot running"></span> Next: ${formatTime(task.nextRun)}</p>` : ''}
             ${renderNextRuns(task.nextRuns || [])}
-            ${preview ? `<div class="schedule-preview-mini">
-                <span>${preview.valid ? 'Preview' : 'Invalid'}</span>
-                <strong>${preview.valid ? `${(preview.runs || []).length} upcoming` : esc(preview.message || 'invalid')}</strong>
-            </div>` : ''}
+            ${preview ? `<div class="schedule-preview-mini"><span>${preview.valid ? 'Preview' : 'Invalid'}</span><strong>${preview.valid ? `${(preview.runs || []).length} upcoming` : esc(preview.message || 'invalid')}</strong></div>` : ''}
         </div>
     `;
 }
@@ -1023,13 +1701,8 @@ function renderTaskDependenciesCard(task, health, dependentsReport) {
                 `).join('')}
             </div>` : `<p class="muted-copy">${hasConfiguredDependencies ? 'Loading dependency health before this task can run...' : 'No upstream dependencies gate this task.'}</p>`}
             <div class="manifest-row"><span class="label">Downstream Dependents</span><span class="value">${dependents.length}</span></div>
-            ${dependents.length ? `<div class="usage-list dependency-usage">
-                ${dependents.slice(0, 5).map(dep => `<a href="#/tasks/${esc(dep.taskID)}">${esc(dep.taskName)}</a>`).join('')}
-                ${dependents.length > 5 ? `<span>${dependents.length - 5} more</span>` : ''}
-            </div>` : ''}
-            <div class="card-actions">
-                <button class="btn btn-sm" data-action="retry-task-dependencies" data-task-id="${attr(task.id)}">Refresh</button>
-            </div>
+            ${dependents.length ? `<div class="usage-list dependency-usage">${dependents.slice(0, 5).map(dep => `<a href="#/tasks/${esc(dep.taskID)}">${esc(dep.taskName)}</a>`).join('')}${dependents.length > 5 ? `<span>${dependents.length - 5} more</span>` : ''}</div>` : ''}
+            <div class="card-actions"><button class="btn btn-sm" data-action="retry-task-dependencies" data-task-id="${attr(task.id)}">Refresh</button></div>
         </div>
     `;
 }
@@ -1070,19 +1743,15 @@ function showSchedulePreview(taskID, preview) {
                 <h2>Schedule Preview</h2>
                 <div class="manifest-row"><span class="label">Expression</span><span class="value">${esc(preview.expression || '')}</span></div>
                 <div class="manifest-row"><span class="label">Timezone</span><span class="value">${esc(preview.timezone || 'UTC')}</span></div>
-                ${preview.valid ? `<div class="next-run-list schedule-preview-list">
-                    ${(preview.runs || []).map((time, index) => `
-                        <div class="next-run-row"><span>#${index + 1}</span><strong>${formatTime(time)}</strong></div>
-                    `).join('')}
-                </div>` : `<div class="delivery-error">${esc(preview.message || 'Schedule is invalid.')}</div>`}
-                <div class="modal-actions">
-                    <button class="btn btn-primary" onclick="document.getElementById('schedule-preview-modal').remove()">Close</button>
-                </div>
+                ${preview.valid ? `<div class="next-run-list schedule-preview-list">${(preview.runs || []).map((time, index) => `<div class="next-run-row"><span>#${index + 1}</span><strong>${formatTime(time)}</strong></div>`).join('')}</div>` : `<div class="delivery-error">${esc(preview.message || 'Schedule is invalid.')}</div>`}
+                <div class="modal-actions"><button class="btn btn-primary" onclick="document.getElementById('schedule-preview-modal').remove()">Close</button></div>
             </div>
         </div>
     `;
     document.body.appendChild(div);
 }
+
+// ===== Run History =====
 
 async function loadRunHistory(taskID) {
     const data = await api('GET', `/api/tasks/${taskID}/runs`);
@@ -1161,9 +1830,7 @@ function renderRunHistoryResults(taskID, runs, filters = {}) {
                 const summary = diagnosis.summary || r.outcome?.parsedResult?.summary || '';
                 return `<a class="run-history-row" data-scroll-key="run-history:${attr(r.taskID || taskID)}:${attr(r.id)}" href="#/tasks/${r.taskID || taskID}/runs/${r.id}">
                     <div class="run-history-primary">
-                        <span class="run-history-status-group">
-                            <span class="badge badge-${runStatusBadge(status)}">${esc(runHistoryStatusLabel(status))}</span>
-                        </span>
+                        <span class="run-history-status-group"><span class="badge badge-${runStatusBadge(status)}">${esc(runHistoryStatusLabel(status))}</span></span>
                         ${renderDeliveryHistorySummary(delivery)}
                     </div>
                     ${summary ? `<div class="run-history-summary">${esc(summary)}</div>` : ''}
@@ -1257,6 +1924,20 @@ function runHistorySearchText(run) {
 
 // ===== Run Detail =====
 
+function renderRunDetailHeader(task, taskID, runID) {
+    return `
+        ${renderPageIntro(
+            task?.name || 'Task',
+            'Run Detail',
+            `Inspect diagnostics, cleanup, and output for run ${runID}.`
+        )}
+        <div class="detail-header compact-header" data-scroll-key="run-detail:${attr(taskID)}:${attr(runID)}:header">
+            <a href="#/tasks/${taskID}" class="back-link" aria-label="Back to task" onclick="goToHash('#/tasks/${taskID}');return false;">←</a>
+            <span class="breadcrumb-label">${esc(task?.name || 'Task')}</span>
+        </div>
+    `;
+}
+
 function renderRunDetail(path) {
     const parts = path.split('/');
     const taskID = parts[2];
@@ -1264,11 +1945,7 @@ function renderRunDetail(path) {
     const task = appState.tasks.find(t => t.id === taskID);
 
     return `
-        <div class="detail-header" data-scroll-key="run-detail:${attr(taskID)}:${attr(runID)}:header">
-            <a href="#/tasks/${taskID}" class="back-link" aria-label="Back to task" onclick="goToHash('#/tasks/${taskID}');return false;">←</a>
-            <span class="breadcrumb-label">${esc(task?.name || 'Task')}</span>
-            <h1>Run Detail</h1>
-        </div>
+        ${renderRunDetailHeader(task, taskID, runID)}
         <div id="run-detail-content">Loading...</div>
     `;
 }
@@ -1298,18 +1975,143 @@ async function loadRunDetail(taskID, runID) {
     }
     appState.runDetails[runID] = run;
     saveOfflineCache();
-
     setHTMLPreservingContentScroll(el, renderRunDetailContent(run));
 }
 
 function cachedRunDetail(taskID, runID) {
     const detail = appState.runDetails[runID];
-    if (detail && (!detail.taskID || detail.taskID === taskID)) {
-        return detail;
-    }
+    if (detail && (!detail.taskID || detail.taskID === taskID)) return detail;
     const history = appState.runHistories[taskID];
     if (!Array.isArray(history)) return null;
     return history.find(r => r.id === runID) || null;
+}
+
+function renderRunDetailSummary(run, status) {
+    return renderSummaryStrip([
+        { label: 'Status', value: status },
+        { label: 'Trigger', value: run.trigger || 'manual' },
+        { label: 'Duration', value: run.outcome?.durationMs ? (run.outcome.durationMs / 1000).toFixed(2) + 's' : '—' },
+        { label: 'Exit code', value: String(run.outcome?.exitCode ?? '—') }
+    ]);
+}
+
+function renderRunDiagnosticsSummary(diagnostics) {
+    return renderSummaryStrip([
+        { label: 'Python', value: diagnostics.pythonExecutable || 'N/A' },
+        { label: 'Environment', value: diagnostics.environmentStrategy || 'N/A' },
+        { label: 'Structured result', value: diagnostics.structuredResultFound ? 'found' : 'missing' }
+    ]);
+}
+
+function renderResourceCleanupSummary(cleanup) {
+    return renderSummaryStrip([
+        { label: 'Process group', value: cleanup.processGroupTerminated ? (cleanup.processGroupForceKilled ? 'force killed' : 'terminated') : 'clear' },
+        { label: 'Detached killed', value: String(cleanup.detachedProcessesKilled || 0) },
+        { label: 'Run dir removed', value: cleanup.runDirectoryRemoved ? 'yes' : 'no' }
+    ]);
+}
+
+function renderRunSummarySection(run, status) {
+    return renderDetailSection(
+        'Run summary',
+        'At-a-glance status for this execution.',
+        `<div class="detail-grid" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:summary">
+            <div class="detail-card"><h3>Status</h3><p><span class="badge badge-${runStatusBadge(status)}">${esc(status)}</span></p></div>
+            <div class="detail-card"><h3>Trigger</h3><p>${esc(run.trigger)}</p></div>
+            <div class="detail-card"><h3>Duration</h3><p>${run.outcome?.durationMs ? (run.outcome.durationMs / 1000).toFixed(2) + 's' : '—'}</p></div>
+            <div class="detail-card"><h3>Exit Code</h3><p style="font-family:var(--font-mono)">${run.outcome?.exitCode ?? '—'}</p></div>
+        </div>`,
+        { summaryHTML: renderRunDetailSummary(run, status), compact: true }
+    );
+}
+
+function renderRunDiagnosticsSection(run, diagnostics) {
+    return renderDetailSection(
+        'Run diagnostics',
+        'Execution context, process details, and output handling for this run.',
+        `<div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:diagnostics">
+            <div class="manifest-row"><span class="label">Python</span><span class="value">${esc(diagnostics.pythonExecutable || 'N/A')}</span></div>
+            <div class="manifest-row"><span class="label">Script</span><span class="value">${esc(diagnostics.scriptPath || 'N/A')}</span></div>
+            <div class="manifest-row"><span class="label">Working Dir</span><span class="value">${esc(diagnostics.workingDirectory || 'N/A')}</span></div>
+            <div class="manifest-row"><span class="label">Env</span><span class="value">${esc(diagnostics.environmentStrategy || 'N/A')}</span></div>
+            ${diagnostics.envFile ? `<div class="manifest-row"><span class="label">Env File</span><span class="value">${esc(diagnostics.envFile)}</span></div>` : ''}
+            <div class="manifest-row"><span class="label">Timeout</span><span class="value">${diagnostics.timeoutSeconds || 0}s</span></div>
+            <div class="manifest-row"><span class="label">Root PID</span><span class="value">${diagnostics.rootPID || '—'}</span></div>
+            <div class="manifest-row"><span class="label">Process Group</span><span class="value">${diagnostics.processGroupID || '—'}</span></div>
+            <div class="manifest-row"><span class="label">Run Isolation</span><span class="value">${diagnostics.isolatedRun ? 'on' : 'off'}</span></div>
+            ${diagnostics.runDirectory ? `<div class="manifest-row"><span class="label">Run Dir</span><span class="value">${esc(diagnostics.runDirectory)}</span></div>` : ''}
+            <div class="manifest-row"><span class="label">Output</span><span class="value">${formatBytes((diagnostics.stdoutBytes || 0) + (diagnostics.stderrBytes || 0))}${diagnostics.outputBytesDiscarded ? ` · ${formatBytes(diagnostics.outputBytesDiscarded)} discarded` : ''}</span></div>
+            <div class="manifest-row"><span class="label">Structured Result</span><span class="value">${diagnostics.structuredResultFound ? 'found' : 'missing'}</span></div>
+        </div>`,
+        { summaryHTML: renderRunDiagnosticsSummary(diagnostics), compact: true }
+    );
+}
+
+function renderCleanupSection(run, cleanup) {
+    return renderDetailSection(
+        'Resource cleanup',
+        'How CronPlus cleaned up the process group and run artifacts after execution.',
+        `<div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:cleanup">
+            <div class="manifest-row"><span class="label">Process Group</span><span class="value">${cleanup.processGroupTerminated ? (cleanup.processGroupForceKilled ? 'force killed' : 'terminated') : 'clear'}</span></div>
+            <div class="manifest-row"><span class="label">Detached Killed</span><span class="value">${cleanup.detachedProcessesKilled || 0}</span></div>
+            <div class="manifest-row"><span class="label">Run Dir Removed</span><span class="value">${cleanup.runDirectoryRemoved ? 'yes' : 'no'}</span></div>
+            ${cleanup.orphanScanError ? `<div class="delivery-error">${esc(cleanup.orphanScanError)}</div>` : ''}
+            ${cleanup.runDirectoryCleanupError ? `<div class="delivery-error">${esc(cleanup.runDirectoryCleanupError)}</div>` : ''}
+        </div>`,
+        { summaryHTML: renderResourceCleanupSummary(cleanup), compact: true }
+    );
+}
+
+function renderRunSummaryCard(run) {
+    if (!run.outcome?.parsedResult?.summary) return '';
+    return renderDetailSection(
+        'Structured summary',
+        'The parsed result summary emitted by the task.',
+        `<div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:result-summary"><p>${esc(run.outcome.parsedResult.summary)}</p></div>`,
+        { compact: true }
+    );
+}
+
+function renderRunStdoutSection(run) {
+    return `
+        <section class="detail-section detail-section-compact">
+            <div class="detail-section-header"><div><h2>STDOUT</h2><p>Primary script output captured for this run.</p></div></div>
+            <div class="log-block" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:stdout">${esc(run.outcome?.stdout || '(empty)')}</div>
+        </section>
+    `;
+}
+
+function renderRunStderrSection(run) {
+    if (!run.outcome?.stderr) return '';
+    return `
+        <section class="detail-section detail-section-compact">
+            <div class="detail-section-header"><div><h2>STDERR</h2><p>Error output and warnings captured for this run.</p></div></div>
+            <div class="log-block" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:stderr">${esc(run.outcome.stderr)}</div>
+        </section>
+    `;
+}
+
+function renderDeliveryResultsSection(deliveryHTML) {
+    if (!deliveryHTML) return '';
+    return renderDetailSection(
+        'Delivery results',
+        'Per-profile delivery attempts and any returned errors.',
+        deliveryHTML,
+        { compact: true }
+    );
+}
+
+function renderRunDetailBody(run, status, diagnostics, cleanup, deliveryHTML) {
+    return `
+        ${renderRunSummarySection(run, status)}
+        ${renderRunDiagnosis(run)}
+        ${run.outcome?.diagnostics ? renderRunDiagnosticsSection(run, diagnostics) : ''}
+        ${run.outcome?.diagnostics ? renderCleanupSection(run, cleanup) : ''}
+        ${renderRunSummaryCard(run)}
+        ${renderDeliveryResultsSection(deliveryHTML)}
+        ${renderRunStdoutSection(run)}
+        ${renderRunStderrSection(run)}
+    `;
 }
 
 function renderRunDetailContent(run, options = {}) {
@@ -1335,74 +2137,65 @@ function renderRunDetailContent(run, options = {}) {
 
     return `
         ${options.notice ? renderInlineNotice(options.notice, options.noticeTone || 'warning') : ''}
-        <div class="detail-grid" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:summary">
-            <div class="detail-card">
-                <h3>Status</h3>
-                <p><span class="badge badge-${runStatusBadge(status)}">${esc(status)}</span></p>
-            </div>
-            <div class="detail-card">
-                <h3>Trigger</h3>
-                <p>${esc(run.trigger)}</p>
-            </div>
-            <div class="detail-card">
-                <h3>Duration</h3>
-                <p>${run.outcome?.durationMs ? (run.outcome.durationMs / 1000).toFixed(2) + 's' : '—'}</p>
-            </div>
-            <div class="detail-card">
-                <h3>Exit Code</h3>
-                <p style="font-family:var(--font-mono)">${run.outcome?.exitCode ?? '—'}</p>
-            </div>
-        </div>
-        ${renderRunDiagnosis(run)}
-        ${run.outcome?.diagnostics ? `
-        <div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:diagnostics" style="margin-bottom:16px">
-            <h3>Run Diagnostics</h3>
-            <div class="manifest-row"><span class="label">Python</span><span class="value">${esc(diagnostics.pythonExecutable || 'N/A')}</span></div>
-            <div class="manifest-row"><span class="label">Script</span><span class="value">${esc(diagnostics.scriptPath || 'N/A')}</span></div>
-            <div class="manifest-row"><span class="label">Working Dir</span><span class="value">${esc(diagnostics.workingDirectory || 'N/A')}</span></div>
-            <div class="manifest-row"><span class="label">Env</span><span class="value">${esc(diagnostics.environmentStrategy || 'N/A')}</span></div>
-            ${diagnostics.envFile ? `<div class="manifest-row"><span class="label">Env File</span><span class="value">${esc(diagnostics.envFile)}</span></div>` : ''}
-            <div class="manifest-row"><span class="label">Timeout</span><span class="value">${diagnostics.timeoutSeconds || 0}s</span></div>
-            <div class="manifest-row"><span class="label">Root PID</span><span class="value">${diagnostics.rootPID || '—'}</span></div>
-            <div class="manifest-row"><span class="label">Process Group</span><span class="value">${diagnostics.processGroupID || '—'}</span></div>
-            <div class="manifest-row"><span class="label">Run Isolation</span><span class="value">${diagnostics.isolatedRun ? 'on' : 'off'}</span></div>
-            ${diagnostics.runDirectory ? `<div class="manifest-row"><span class="label">Run Dir</span><span class="value">${esc(diagnostics.runDirectory)}</span></div>` : ''}
-            <div class="manifest-row"><span class="label">Output</span><span class="value">${formatBytes((diagnostics.stdoutBytes || 0) + (diagnostics.stderrBytes || 0))}${diagnostics.outputBytesDiscarded ? ` · ${formatBytes(diagnostics.outputBytesDiscarded)} discarded` : ''}</span></div>
-            <div class="manifest-row"><span class="label">Structured Result</span><span class="value">${diagnostics.structuredResultFound ? 'found' : 'missing'}</span></div>
-        </div>
-        <div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:cleanup" style="margin-bottom:16px">
-            <h3>Resource Cleanup</h3>
-            <div class="manifest-row"><span class="label">Process Group</span><span class="value">${cleanup.processGroupTerminated ? (cleanup.processGroupForceKilled ? 'force killed' : 'terminated') : 'clear'}</span></div>
-            <div class="manifest-row"><span class="label">Detached Killed</span><span class="value">${cleanup.detachedProcessesKilled || 0}</span></div>
-            <div class="manifest-row"><span class="label">Run Dir Removed</span><span class="value">${cleanup.runDirectoryRemoved ? 'yes' : 'no'}</span></div>
-            ${cleanup.orphanScanError ? `<div class="delivery-error">${esc(cleanup.orphanScanError)}</div>` : ''}
-            ${cleanup.runDirectoryCleanupError ? `<div class="delivery-error">${esc(cleanup.runDirectoryCleanupError)}</div>` : ''}
-        </div>` : ''}
-        ${run.outcome?.parsedResult?.summary ? `
-        <div class="detail-card" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:result-summary" style="margin-bottom:16px">
-            <h3>Summary</h3>
-            <p>${esc(run.outcome.parsedResult.summary)}</p>
-        </div>` : ''}
-        ${deliveryHTML}
-        <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text-secondary)">STDOUT</h3>
-        <div class="log-block" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:stdout">${esc(run.outcome?.stdout || '(empty)')}</div>
-        ${run.outcome?.stderr ? `
-        <h3 style="margin:16px 0 8px;font-size:14px;color:var(--text-secondary)">STDERR</h3>
-        <div class="log-block" data-scroll-key="run-detail:${attr(run.taskID || '')}:${attr(run.id)}:stderr">${esc(run.outcome.stderr)}</div>` : ''}
+        ${renderRunDetailBody(run, status, diagnostics, cleanup, deliveryHTML)}
     `;
 }
 
 // ===== Health =====
 
+function renderHealthOverviewSummary(h) {
+    return renderSummaryStrip([
+        { label: 'Status', value: h.status || 'healthy' },
+        { label: 'Version', value: h.version || appState.status?.version || 'dev' },
+        { label: 'Attention items', value: formatCountLabel((h.attentionItems || []).length, 'item') }
+    ]);
+}
+
+function renderHealthStorageSummary(storage) {
+    const taskPackages = storage.taskPackages || {};
+    const environments = storage.environments || {};
+    return renderSummaryStrip([
+        { label: 'Task packages', value: taskPackages.path ? `${formatBytes(taskPackages.bytes || 0)} · ${taskPackages.files || 0} files` : 'N/A' },
+        { label: 'Environments', value: environments.path ? `${formatBytes(environments.bytes || 0)} · ${environments.files || 0} files` : 'N/A' }
+    ]);
+}
+
+function renderActiveRunsSummary(activeRuns) {
+    return renderSummaryStrip([
+        { label: 'Visible active runs', value: formatCountLabel((activeRuns || []).length, 'run') }
+    ]);
+}
+
+function renderRetentionSummary(retention) {
+    return renderSummaryStrip([
+        { label: 'Max runs', value: String(retention.maxRunsPerTask || retention.defaultMaxRunsPerTask || 50) },
+        { label: 'Max age days', value: String(retention.maxRunAgeDays || 0) },
+        { label: 'Output KB', value: String(retention.maxRunOutputKB || 0) }
+    ]);
+}
+
+function renderBrowserHealthSummary(browser) {
+    return renderSummaryStrip([
+        { label: 'Active browser runs', value: formatCountLabel(browser.activeRuns || 0, 'run') },
+        { label: 'Recent failures', value: formatCountLabel(browser.recentFailures || 0, 'failure') },
+        { label: 'Retained dirs', value: formatCountLabel(browser.staleRunDirectories || 0, 'dir') }
+    ]);
+}
+
+function renderAttentionSummary(items) {
+    return renderSummaryStrip([
+        { label: 'Items to review', value: formatCountLabel((items || []).length, 'item') }
+    ]);
+}
+
 function renderHealth() {
     return `
-        <div class="page-header" style="display:flex;justify-content:space-between;align-items:start">
-            <div>
-                <h1>Health</h1>
-                <p>Runtime, storage, and maintenance status</p>
-            </div>
-            <button class="btn" onclick="loadHealth({ force: true })">Refresh</button>
-        </div>
+        ${renderPageIntro(
+            'System health',
+            'Health',
+            'Review runtime status, active work, resource pressure, and maintenance controls in one place.',
+            '<button class="btn" onclick="loadHealth({ force: true })">Refresh</button>'
+        )}
         <div id="health-content">${renderHealthContent()}</div>
     `;
 }
@@ -1427,102 +2220,42 @@ async function loadHealth(options = {}) {
     if (el) setHTMLPreservingContentScroll(el, renderHealthContent());
 }
 
-function renderHealthContent() {
-    const h = appState.health;
-    if (!h) return renderInlineState('Loading health', '', 'neutral');
-    const tasks = h.tasks || {};
-    const runs = h.runs || {};
-    const env = h.environments || {};
-    const storage = h.storage || {};
-    const server = h.server || {};
-    const browser = h.browser || {};
-    return `
-        <div class="attention-panel health-summary health-${esc(h.status || 'healthy')}">
-            <div>
-                <h2>${esc(h.status || 'healthy')}</h2>
-                <p>${esc(h.summary || '')}</p>
-            </div>
-            <span class="badge badge-${healthBadgeClass(h.status)}">${esc(h.version || appState.status?.version || 'dev')}</span>
-        </div>
-        <div class="stats-grid">
-            <div class="stat-card"><div class="stat-label">Tasks</div><div class="stat-value">${tasks.total || 0}</div><p>${tasks.enabled || 0} enabled · ${tasks.disabled || 0} disabled</p></div>
-            <div class="stat-card"><div class="stat-label">Runs</div><div class="stat-value ${(runs.recentFailures || 0) ? 'danger' : 'success'}">${runs.total || 0}</div><p>${runs.recentFailures || 0} failures in 24h</p></div>
-            <div class="stat-card"><div class="stat-label">Environments</div><div class="stat-value">${formatBytes(env.totalBytes || 0)}</div><p>${env.managed || 0} managed · ${env.customVenv || 0} custom</p></div>
-            <div class="stat-card"><div class="stat-label">Active Runs</div><div class="stat-value ${h.activeRuns?.length ? 'warning' : 'success'}">${(h.activeRuns || []).length}</div><p>${env.pending || 0} env pending · ${env.failed || 0} env failed</p></div>
-            <div class="stat-card"><div class="stat-label">Browser Tasks</div><div class="stat-value ${(browser.recentFailures || browser.suspectedProcesses) ? 'danger' : 'success'}">${browser.tasks || 0}</div><p>${browser.activeRuns || 0} active · ${browser.staleRunDirectories || 0} retained dirs</p></div>
-        </div>
-        <div class="health-grid">
-            <div class="detail-card">
-                <h3>Storage</h3>
-                ${renderUsageRow('State DB', storage.stateFile)}
-                ${renderUsageRow('Config Dir', storage.configDir)}
-                ${renderUsageRow('Task Packages', storage.taskPackages)}
-                ${renderUsageRow('Environments', storage.environments)}
-            </div>
-            <div class="detail-card">
-                <h3>Daemon</h3>
-                <div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div>
-                <div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div>
-                <div class="manifest-row"><span class="label">State DB</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
-                <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
-            </div>
-        </div>
-        ${renderBrowserHealth(browser)}
-        ${renderRetentionCard(h.retention || {})}
-        ${renderActiveRuns(h.activeRuns || [])}
-        ${renderAttentionItems(h.attentionItems || [])}
-    `;
-}
-
 function renderUsageRow(label, usage) {
-	usage = usage || {};
-	return `
-		<div class="manifest-row">
-			<span class="label">${esc(label)}</span>
+    usage = usage || {};
+    return `
+        <div class="manifest-row">
+            <span class="label">${esc(label)}</span>
             <span class="value">${usage.path ? `${formatBytes(usage.bytes || 0)} · ${usage.files || 0} files` : 'N/A'}</span>
         </div>
         ${usage.error ? `<div class="delivery-error">${esc(usage.error)}</div>` : ''}
-	`;
+    `;
 }
 
 function renderRetentionCard(retention) {
-	const defaultMaxRuns = retention.defaultMaxRunsPerTask || 50;
-	const report = appState.retentionCleanup;
-	return `
-		<div class="detail-card retention-card">
-			<div class="card-title-row">
-				<div>
-					<h3>Run History Retention</h3>
-					<p class="card-copy">Max runs defaults to ${defaultMaxRuns} when set to 0. Output pruning keeps the newest bytes per stream.</p>
-				</div>
-				<button class="btn btn-sm" data-action="cleanup-retention">Cleanup Now</button>
-			</div>
-			<div class="retention-form">
-				<label>
-					<span>Max runs per task</span>
-					<input class="form-input" id="retention-max-runs" type="number" min="0" step="1" value="${Number(retention.maxRunsPerTask || defaultMaxRuns)}">
-				</label>
-				<label>
-					<span>Max age days</span>
-					<input class="form-input" id="retention-max-age" type="number" min="0" step="1" value="${Number(retention.maxRunAgeDays || 0)}">
-				</label>
-				<label>
-					<span>Output KB per stream</span>
-					<input class="form-input" id="retention-max-output" type="number" min="0" step="1" value="${Number(retention.maxRunOutputKB || 0)}">
-				</label>
-				<button class="btn btn-primary" data-action="save-retention">Save</button>
-			</div>
-			<div class="retention-meta">
-				<span>${retention.agePruningEnabled ? 'Age pruning on' : 'Age pruning off'}</span>
-				<span>${retention.outputPruningEnabled ? 'Output pruning on' : 'Output pruning off'}</span>
-			</div>
-			${report ? `<div class="retention-report">
-				<span>${report.runsDeleted || 0} runs deleted</span>
-				<span>${formatBytes(report.outputBytesPruned || 0)} output pruned</span>
-				<span>${report.tasksAffected || 0} tasks affected</span>
-			</div>` : ''}
-		</div>
-	`;
+    const defaultMaxRuns = retention.defaultMaxRunsPerTask || 50;
+    const report = appState.retentionCleanup;
+    return `
+        <div class="detail-card retention-card">
+            <div class="card-title-row">
+                <div>
+                    <h3>Run History Retention</h3>
+                    <p class="card-copy">Max runs defaults to ${defaultMaxRuns} when set to 0. Output pruning keeps the newest bytes per stream.</p>
+                </div>
+                <button class="btn btn-sm" data-action="cleanup-retention">Cleanup Now</button>
+            </div>
+            <div class="retention-form">
+                <label><span>Max runs per task</span><input class="form-input" id="retention-max-runs" type="number" min="0" step="1" value="${Number(retention.maxRunsPerTask || defaultMaxRuns)}"></label>
+                <label><span>Max age days</span><input class="form-input" id="retention-max-age" type="number" min="0" step="1" value="${Number(retention.maxRunAgeDays || 0)}"></label>
+                <label><span>Output KB per stream</span><input class="form-input" id="retention-max-output" type="number" min="0" step="1" value="${Number(retention.maxRunOutputKB || 0)}"></label>
+                <button class="btn btn-primary" data-action="save-retention">Save</button>
+            </div>
+            <div class="retention-meta">
+                <span>${retention.agePruningEnabled ? 'Age pruning on' : 'Age pruning off'}</span>
+                <span>${retention.outputPruningEnabled ? 'Output pruning on' : 'Output pruning off'}</span>
+            </div>
+            ${report ? `<div class="retention-report"><span>${report.runsDeleted || 0} runs deleted</span><span>${formatBytes(report.outputBytesPruned || 0)} output pruned</span><span>${report.tasksAffected || 0} tasks affected</span></div>` : ''}
+        </div>
+    `;
 }
 
 function renderBrowserHealth(browser) {
@@ -1543,12 +2276,7 @@ function renderBrowserHealth(browser) {
                 <div><span>Cache</span><strong>${formatBytes(browser.cacheBytes || 0)}</strong></div>
                 <div><span>Total</span><strong>${formatBytes(bytes)}</strong></div>
             </div>
-            ${((browser.staleRunDirectoryPaths || []).length || (browser.staleProfileDirectoryPaths || []).length) ? `<div class="retention-report">
-                <span>${browser.staleRunDirectories || 0} retained run dirs</span>
-                <span>${formatBytes(browser.staleRunDirectoryUsage?.bytes || 0)} retained bytes</span>
-                <span>${browser.staleProfileDirectories || 0} retained profiles</span>
-                <span>${formatBytes(browser.staleProfileDirectoryUsage?.bytes || 0)} profile bytes</span>
-            </div>` : ''}
+            ${((browser.staleRunDirectoryPaths || []).length || (browser.staleProfileDirectoryPaths || []).length) ? `<div class="retention-report"><span>${browser.staleRunDirectories || 0} retained run dirs</span><span>${formatBytes(browser.staleRunDirectoryUsage?.bytes || 0)} retained bytes</span><span>${browser.staleProfileDirectories || 0} retained profiles</span><span>${formatBytes(browser.staleProfileDirectoryUsage?.bytes || 0)} profile bytes</span></div>` : ''}
         </div>
     `;
 }
@@ -1605,27 +2333,43 @@ function renderActiveRunLogs(run) {
     `;
 }
 
-// ===== Delivery =====
-
-function renderDelivery() {
+function renderHealthBody(h, storage, server, browser) {
     return `
-        <div class="page-header" style="display:flex;justify-content:space-between;align-items:start">
-            <div>
-                <h1>Delivery Profiles</h1>
-                <p>Configure where task results are sent</p>
-            </div>
-            <button class="btn btn-primary" onclick="showAddProfileModal()">+ Add Profile</button>
-        </div>
-        <div id="delivery-list-content">${renderDeliveryList()}</div>
-        <div id="profile-modal"></div>
+        ${renderHealthOverviewSummary(h)}
+        ${renderResourcePanel('Storage and daemon', 'Check where CronPlus is storing state and how much local footprint it is using.', `<div class="health-grid"><div class="detail-card"><h3>Storage</h3>${renderUsageRow('State DB', storage.stateFile)}${renderUsageRow('Config Dir', storage.configDir)}${renderUsageRow('Task Packages', storage.taskPackages)}${renderUsageRow('Environments', storage.environments)}</div><div class="detail-card"><h3>Daemon</h3><div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div><div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div><div class="manifest-row"><span class="label">State DB</span><span class="value">${esc(server.statePath || 'N/A')}</span></div><div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div></div></div>`, { summaryHTML: renderHealthStorageSummary(storage) })}
+        ${browser && (browser.tasks || browser.activeRuns || browser.staleRunDirectories || browser.recentFailures) ? renderResourcePanel('Browser automation', 'Track retained browser artifacts, recent failures, and suspected leftover processes.', renderBrowserHealth(browser), { summaryHTML: renderBrowserHealthSummary(browser) }) : ''}
+        ${renderResourcePanel('Run history retention', 'Bound long-term history growth and prune retained output when needed.', renderRetentionCard(h.retention || {}), { summaryHTML: renderRetentionSummary(h.retention || {}) })}
+        ${(h.activeRuns || []).length ? renderResourcePanel('Active runs', 'Watch currently executing work, including live process details and cancellation controls.', renderActiveRuns(h.activeRuns || []), { summaryHTML: renderActiveRunsSummary(h.activeRuns || []) }) : ''}
+        ${renderResourcePanel('Needs attention', 'Items that need manual review right now.', renderAttentionItems(h.attentionItems || []), { summaryHTML: renderAttentionSummary(h.attentionItems || []), tone: (h.attentionItems || []).length ? 'warning' : 'success' })}
     `;
 }
 
-function renderDeliveryList() {
-    return `
-        ${appState.deliveries.length === 0 ?
-            '<div class="empty-state"><div class="icon">📬</div><h3>No delivery profiles</h3><p>Add a Telegram profile to receive task results.</p></div>' :
-            `<div class="task-list">${appState.deliveries.map(p => `
+function renderHealthContent() {
+    const h = appState.health;
+    if (!h) return renderInlineState('Loading health', '', 'neutral');
+    const storage = h.storage || {};
+    const server = h.server || {};
+    const browser = h.browser || {};
+    return renderHealthBody(h, storage, server, browser);
+}
+
+// ===== Delivery =====
+
+function renderDeliverySummary(profiles) {
+    const list = profiles || [];
+    return renderSummaryStrip([
+        { label: 'Profiles', value: formatCountLabel(list.length, 'profile') },
+        { label: 'Commands enabled', value: formatCountLabel(list.filter(p => p.inboundCommandsEnabled).length, 'profile') }
+    ]);
+}
+
+function renderDeliveryProfilesSection(profiles) {
+    return renderDataListSection(
+        'Configured profiles',
+        'Manage outbound destinations and inbound command access for delivery channels.',
+        profiles.length === 0
+            ? '<div class="empty-state"><div class="icon">📬</div><h3>No delivery profiles</h3><p>Add a Telegram profile to receive task results.</p></div>'
+            : `<div class="task-list">${profiles.map(p => `
                 <div class="task-row" style="cursor:default">
                     <div class="task-info">
                         <div class="task-name">${esc(p.name)}</div>
@@ -1645,9 +2389,30 @@ function renderDeliveryList() {
                     <button class="btn btn-sm" data-profile-action="test" data-profile-id="${esc(p.id)}">Test</button>
                     <button class="btn btn-sm btn-danger" data-profile-action="delete" data-profile-id="${esc(p.id)}">Delete</button>
                 </div>
-            `).join('')}</div>`
-        }
+            `).join('')}</div>`,
+        { summaryHTML: renderDeliverySummary(profiles) }
+    );
+}
+
+function renderDeliveryPageIntro() {
+    return renderPageIntro(
+        'Notifications',
+        'Delivery Profiles',
+        'Configure where task results are sent and how CronPlus can accept inbound commands.',
+        '<button class="btn btn-primary" onclick="showAddProfileModal()">+ Add Profile</button>'
+    );
+}
+
+function renderDelivery() {
+    return `
+        ${renderDeliveryPageIntro()}
+        <div id="delivery-list-content">${renderDeliveryProfilesSection(appState.deliveries || [])}</div>
+        <div id="profile-modal"></div>
     `;
+}
+
+function renderDeliveryList() {
+    return renderDeliveryProfilesSection(appState.deliveries || []);
 }
 
 function showEditProfileModal(id) {
@@ -1665,39 +2430,14 @@ function showEditProfileModal(id) {
         <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
             <div class="modal">
                 <h2>Edit Telegram Profile</h2>
-                <div class="form-group">
-                    <label class="form-label">Profile Name</label>
-                    <input class="form-input" id="edit-profile-name" value="${esc(profile.name)}" />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Profile ID</label>
-                    <input class="form-input" value="${esc(profile.id)}" disabled />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">New Bot Token</label>
-                    <input class="form-input" id="edit-profile-token" type="password" placeholder="${profile.configFields?.botToken ? 'Leave blank to keep existing token' : '123456:ABC-DEF...'}" />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">New Chat ID</label>
-                    <input class="form-input" id="edit-profile-chat" placeholder="${profile.configFields?.chatID ? 'Leave blank to keep existing chat ID' : '-100123456789'}" />
-                    ${latestCommandChatID() ? '<button class="btn btn-sm inline-form-action" onclick="useLatestCommandChat(\'edit-profile-chat\')">Use latest command chat</button>' : ''}
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Authorized Chat IDs</label>
-                    <textarea class="form-input" id="edit-profile-authorized" rows="3" placeholder="One chat ID per line">${esc((profile.authorizedChatIDs || []).join('\\n'))}</textarea>
-                </div>
-                <label class="checkbox-row">
-                    <input type="checkbox" id="edit-profile-enabled" ${profile.enabled ? 'checked' : ''} />
-                    <span>Profile enabled</span>
-                </label>
-                <label class="checkbox-row" style="margin-top:10px">
-                    <input type="checkbox" id="edit-profile-commands" ${profile.inboundCommandsEnabled ? 'checked' : ''} />
-                    <span>Enable Telegram commands</span>
-                </label>
-                <div class="modal-actions">
-                    <button class="btn" onclick="document.getElementById('edit-profile-modal').remove()">Cancel</button>
-                    <button class="btn btn-primary" onclick="updateProfileFromModal()">Save</button>
-                </div>
+                <div class="form-group"><label class="form-label">Profile Name</label><input class="form-input" id="edit-profile-name" value="${esc(profile.name)}" /></div>
+                <div class="form-group"><label class="form-label">Profile ID</label><input class="form-input" value="${esc(profile.id)}" disabled /></div>
+                <div class="form-group"><label class="form-label">New Bot Token</label><input class="form-input" id="edit-profile-token" type="password" placeholder="${profile.configFields?.botToken ? 'Leave blank to keep existing token' : '123456:ABC-DEF...'}" /></div>
+                <div class="form-group"><label class="form-label">New Chat ID</label><input class="form-input" id="edit-profile-chat" placeholder="${profile.configFields?.chatID ? 'Leave blank to keep existing chat ID' : '-100123456789'}" />${latestCommandChatID() ? '<button class="btn btn-sm inline-form-action" onclick="useLatestCommandChat(\'edit-profile-chat\')">Use latest command chat</button>' : ''}</div>
+                <div class="form-group"><label class="form-label">Authorized Chat IDs</label><textarea class="form-input" id="edit-profile-authorized" rows="3" placeholder="One chat ID per line">${esc((profile.authorizedChatIDs || []).join('\n'))}</textarea></div>
+                <label class="checkbox-row"><input type="checkbox" id="edit-profile-enabled" ${profile.enabled ? 'checked' : ''} /><span>Profile enabled</span></label>
+                <label class="checkbox-row" style="margin-top:10px"><input type="checkbox" id="edit-profile-commands" ${profile.inboundCommandsEnabled ? 'checked' : ''} /><span>Enable Telegram commands</span></label>
+                <div class="modal-actions"><button class="btn" onclick="document.getElementById('edit-profile-modal').remove()">Cancel</button><button class="btn btn-primary" onclick="updateProfileFromModal()">Save</button></div>
             </div>
         </div>
     `;
@@ -1710,31 +2450,12 @@ function showAddProfileModal() {
         <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
             <div class="modal">
                 <h2>Add Telegram Profile</h2>
-                <div class="form-group">
-                    <label class="form-label">Profile Name</label>
-                    <input class="form-input" id="new-profile-name" value="My Telegram" oninput="syncNewProfileID()" />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Profile ID</label>
-                    <input class="form-input" id="new-profile-id" value="my-telegram" placeholder="my-telegram" oninput="this.dataset.touched='true'" />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Bot Token</label>
-                    <input class="form-input" id="new-profile-token" type="password" placeholder="123456:ABC-DEF..." />
-                </div>
-                <div class="form-group">
-                    <label class="form-label">Chat ID</label>
-                    <input class="form-input" id="new-profile-chat" placeholder="-100123456789" />
-                    ${latestCommandChatID() ? '<button class="btn btn-sm inline-form-action" onclick="useLatestCommandChat(\'new-profile-chat\')">Use latest command chat</button>' : ''}
-                </div>
-                <label class="checkbox-row">
-                    <input type="checkbox" id="new-profile-commands" />
-                    <span>Enable Telegram commands for this chat</span>
-                </label>
-                <div class="modal-actions">
-                    <button class="btn" onclick="document.getElementById('profile-modal').innerHTML=''">Cancel</button>
-                    <button class="btn btn-primary" onclick="createProfile()">Create</button>
-                </div>
+                <div class="form-group"><label class="form-label">Profile Name</label><input class="form-input" id="new-profile-name" value="My Telegram" oninput="syncNewProfileID()" /></div>
+                <div class="form-group"><label class="form-label">Profile ID</label><input class="form-input" id="new-profile-id" value="my-telegram" placeholder="my-telegram" oninput="this.dataset.touched='true'" /></div>
+                <div class="form-group"><label class="form-label">Bot Token</label><input class="form-input" id="new-profile-token" type="password" placeholder="123456:ABC-DEF..." /></div>
+                <div class="form-group"><label class="form-label">Chat ID</label><input class="form-input" id="new-profile-chat" placeholder="-100123456789" />${latestCommandChatID() ? '<button class="btn btn-sm inline-form-action" onclick="useLatestCommandChat(\'new-profile-chat\')">Use latest command chat</button>' : ''}</div>
+                <label class="checkbox-row"><input type="checkbox" id="new-profile-commands" /><span>Enable Telegram commands for this chat</span></label>
+                <div class="modal-actions"><button class="btn" onclick="document.getElementById('profile-modal').innerHTML=\'\'">Cancel</button><button class="btn btn-primary" onclick="createProfile()">Create</button></div>
             </div>
         </div>
     `;
@@ -1778,14 +2499,9 @@ async function createProfile() {
         driverType: 'telegram',
         enabled: true,
         inboundCommandsEnabled: document.getElementById('new-profile-commands').checked,
-        config: {
-            bot_token: botToken,
-            chat_id: chatID
-        }
+        config: { bot_token: botToken, chat_id: chatID }
     };
-    if (idInput.dataset.touched === 'true') {
-        profile.id = profileID;
-    }
+    if (idInput.dataset.touched === 'true') profile.id = profileID;
     const result = await api('POST', '/api/deliveries', profile);
     if (result?.error) {
         toast(result.message || 'Profile could not be created', 'error');
@@ -1814,10 +2530,7 @@ async function updateProfile(id) {
     const config = {};
     if (botToken) config.bot_token = botToken;
     if (chatID) config.chat_id = chatID;
-    const authorizedChatIDs = authorizedText
-        .split(/[\n,]+/)
-        .map(v => v.trim())
-        .filter(Boolean);
+    const authorizedChatIDs = authorizedText.split(/[\n,]+/).map(v => v.trim()).filter(Boolean);
     const profile = {
         name,
         driverType: 'telegram',
@@ -1870,10 +2583,7 @@ async function toggleProfileCommands(id, enabled) {
 function renderDeliveryUsage(profile) {
     const usedBy = profile.usedByTasks || [];
     if (!usedBy.length) return '';
-    return `<div class="usage-list">
-        ${usedBy.slice(0, 4).map(task => `<a href="#/tasks/${esc(task.id)}" onclick="event.stopPropagation()">${esc(task.name)}</a>`).join('')}
-        ${usedBy.length > 4 ? `<span>${usedBy.length - 4} more</span>` : ''}
-    </div>`;
+    return `<div class="usage-list">${usedBy.slice(0, 4).map(task => `<a href="#/tasks/${esc(task.id)}" onclick="event.stopPropagation()">${esc(task.name)}</a>`).join('')}${usedBy.length > 4 ? `<span>${usedBy.length - 4} more</span>` : ''}</div>`;
 }
 
 function latestCommandChatID() {
@@ -1892,46 +2602,31 @@ function useLatestCommandChat(inputID) {
 function explainDeliveryError(message) {
     const text = String(message || '');
     const lower = text.toLowerCase();
-    if (lower.includes('missing bot_token') || lower.includes('missing') && lower.includes('chat_id')) {
-        return 'Telegram profile is missing a bot token or chat ID.';
-    }
-    if (lower.includes('401') || lower.includes('unauthorized')) {
-        return 'Telegram rejected the bot token.';
-    }
-    if (lower.includes('400') && lower.includes('chat')) {
-        return 'Telegram could not find that chat ID.';
-    }
-    if (lower.includes('403') || lower.includes('blocked')) {
-        return 'Telegram cannot send to this chat. The bot may be blocked or not in the chat.';
-    }
-    if (lower.includes('request failed') || lower.includes('timeout')) {
-        return 'Telegram request failed. Check network access and try again.';
-    }
+    if (lower.includes('missing bot_token') || (lower.includes('missing') && lower.includes('chat_id'))) return 'Telegram profile is missing a bot token or chat ID.';
+    if (lower.includes('401') || lower.includes('unauthorized')) return 'Telegram rejected the bot token.';
+    if (lower.includes('400') && lower.includes('chat')) return 'Telegram could not find that chat ID.';
+    if (lower.includes('403') || lower.includes('blocked')) return 'Telegram cannot send to this chat. The bot may be blocked or not in the chat.';
+    if (lower.includes('request failed') || lower.includes('timeout')) return 'Telegram request failed. Check network access and try again.';
     return text;
 }
 
 // ===== Commands =====
 
-function renderCommands() {
-    return `
-        <div class="page-header" style="display:flex;justify-content:space-between;align-items:start">
-            <div>
-                <h1>Command Log</h1>
-                <p>Inbound commands received from channels</p>
-            </div>
-            ${appState.commands.length > 0 ? '<button class="btn btn-danger btn-sm" onclick="clearCommands()">Clear Log</button>' : ''}
-        </div>
-        <div id="commands-content">${renderCommandsContent()}</div>
-    `;
+function renderCommandLogSummary(commands) {
+    return renderSummaryStrip([
+        { label: 'Recorded commands', value: formatCountLabel((commands || []).length, 'command') }
+    ]);
 }
 
-function renderCommandsContent() {
-    return `
-        ${appState.commands.length === 0 ?
-            '<div class="empty-state"><div class="icon">💬</div><h3>No commands received</h3></div>' :
-            `<div class="table-wrapper"><table>
+function renderCommandsSection(commands) {
+    return renderDataListSection(
+        'Received commands',
+        'See exactly what was received, which chat sent it, and how CronPlus responded.',
+        commands.length === 0
+            ? '<div class="empty-state"><div class="icon">💬</div><h3>No commands received</h3></div>'
+            : `<div class="table-wrapper"><table>
                 <thead><tr><th>Command</th><th>Chat</th><th>Reply / Error</th><th>Time</th></tr></thead>
-                <tbody>${appState.commands.map(c => `
+                <tbody>${commands.map(c => `
                     <tr>
                         <td style="font-family:var(--font-mono)">${esc(c.commandText)}</td>
                         <td>${esc(c.chatID)}</td>
@@ -1939,15 +2634,33 @@ function renderCommandsContent() {
                         <td>${formatTime(c.receivedAt)}</td>
                     </tr>
                 `).join('')}</tbody>
-            </table></div>`
-        }
+            </table></div>`,
+        { summaryHTML: renderCommandLogSummary(commands) }
+    );
+}
+
+function renderCommandsPageIntro(hasCommands) {
+    return renderPageIntro(
+        'Inbound control',
+        'Command Log',
+        'Review commands received from connected channels and the replies CronPlus sent back.',
+        hasCommands ? '<button class="btn btn-danger btn-sm" onclick="clearCommands()">Clear Log</button>' : ''
+    );
+}
+
+function renderCommands() {
+    return `
+        ${renderCommandsPageIntro(appState.commands.length > 0)}
+        <div id="commands-content">${renderCommandsSection(appState.commands || [])}</div>
     `;
 }
 
+function renderCommandsContent() {
+    return renderCommandsSection(appState.commands || []);
+}
+
 function renderCommandReplyCell(command) {
-    if (command.error) {
-        return `<span class="delivery-error">${esc(truncateText(command.error, 100))}</span>`;
-    }
+    if (command.error) return `<span class="delivery-error">${esc(truncateText(command.error, 100))}</span>`;
     return esc(truncateText(command.replyText || '', 100));
 }
 
@@ -1969,39 +2682,58 @@ async function clearCommands() {
 
 // ===== Settings =====
 
+function renderSettingsSummary(status) {
+    const server = status?.server || {};
+    return renderSummaryStrip([
+        { label: 'Version', value: status?.version || 'N/A' },
+        { label: 'Web UI', value: server.addr ? `http://${server.addr}` : 'N/A' },
+        { label: 'Connection', value: connectionSummaryText() }
+    ]);
+}
+
+function renderDaemonMetadata(server) {
+    return renderMetadataList([
+        { label: 'Web UI', value: server.addr ? `http://${server.addr}` : 'N/A' },
+        { label: 'Config dir', value: server.configDir || 'N/A' },
+        { label: 'State DB', value: server.statePath || 'N/A' },
+        { label: 'Token file', value: server.tokenPath || '~/.config/cronplus/auth-token' },
+        { label: 'Max runs', value: String(server.maxConcurrentRuns || 'N/A') }
+    ]);
+}
+
+function renderSettingsAuthenticationPanel() {
+    return renderResourcePanel('Authentication', 'Use this token to access the local API, UI, and compatible tools.', `<div class="detail-card"><p style="margin-bottom:12px">Your auth token is stored at:</p><div class="log-block" style="max-height:none">~/.config/cronplus/auth-token</div><div style="display:flex;gap:12px;margin-top:12px"><button class="btn btn-sm" onclick="navigator.clipboard.writeText(authToken);toast('Token copied','success')">Copy Token</button><button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="logout()">Sign Out</button></div></div>`);
+}
+
+function renderSettingsVersionPanel(status) {
+    return renderResourcePanel('Version', 'Current CronPlus build visible to this UI session.', `<div class="detail-card"><p id="settings-version">${status?.version || 'N/A'}</p></div>`);
+}
+
+function renderSettingsDaemonPanel(server) {
+    return renderResourcePanel('Daemon', 'Local daemon paths and runtime configuration surfaced by CronPlus.', `<div class="detail-card">${renderDaemonMetadata(server)}</div>`);
+}
+
+function renderSettingsCachePanel() {
+    return renderResourcePanel('Offline cache', 'Clear cached UI state if you want the interface to reload from scratch.', '<div class="detail-card"><button class="btn btn-sm" onclick="clearOfflineCache()">Clear Cache</button></div>');
+}
+
+function renderSettingsPageIntro() {
+    return renderPageIntro('Daemon configuration', 'Settings', 'Inspect local auth, daemon paths, and session-level cache state.');
+}
+
 function renderSettings() {
-    const server = appState.status?.server || {};
     return `
-        <div class="page-header">
-            <h1>Settings</h1>
-            <p>Daemon configuration</p>
-        </div>
-        <div class="detail-card" style="max-width:500px">
-            <h3>Authentication</h3>
-            <p style="margin-bottom:12px">Your auth token is stored at:</p>
-            <div class="log-block" style="max-height:none">~/.config/cronplus/auth-token</div>
-            <div style="display:flex;gap:12px;margin-top:12px">
-                <button class="btn btn-sm" onclick="navigator.clipboard.writeText(authToken);toast('Token copied','success')">Copy Token</button>
-                <button class="btn btn-sm" style="color:var(--danger);border-color:var(--danger)" onclick="logout()">Sign Out</button>
-            </div>
-        </div>
-        <div class="detail-card" style="max-width:500px;margin-top:16px">
-            <h3>Version</h3>
-            <p id="settings-version">${appState.status?.version || 'N/A'}</p>
-        </div>
-        <div class="detail-card" style="max-width:720px;margin-top:16px">
-            <h3>Daemon</h3>
-            <div class="manifest-row"><span class="label">Web UI</span><span class="value">${server.addr ? `http://${esc(server.addr)}` : 'N/A'}</span></div>
-            <div class="manifest-row"><span class="label">Config Dir</span><span class="value">${esc(server.configDir || 'N/A')}</span></div>
-            <div class="manifest-row"><span class="label">State DB</span><span class="value">${esc(server.statePath || 'N/A')}</span></div>
-            <div class="manifest-row"><span class="label">Token File</span><span class="value">${esc(server.tokenPath || '~/.config/cronplus/auth-token')}</span></div>
-            <div class="manifest-row"><span class="label">Max Runs</span><span class="value">${server.maxConcurrentRuns || 'N/A'}</span></div>
-        </div>
-        <div class="detail-card" style="max-width:500px;margin-top:16px">
-            <h3>Offline Cache</h3>
-            <button class="btn btn-sm" onclick="clearOfflineCache()">Clear Cache</button>
-        </div>
+        ${renderSettingsPageIntro()}
+        ${renderSettingsSummary(appState.status)}
+        ${renderSettingsAuthenticationPanel()}
+        ${renderSettingsVersionPanel(appState.status)}
+        ${renderSettingsDaemonPanel(appState.status?.server || {})}
+        ${renderSettingsCachePanel()}
     `;
+}
+
+function renderSettingsContent() {
+    return renderSettings();
 }
 
 // ===== Actions =====
@@ -2093,9 +2825,7 @@ async function checkImportedTask(id) {
         return;
     }
     appState.taskChecks[id] = result;
-    if (target) {
-        target.innerHTML = renderTaskPackageCheck(result);
-    }
+    if (target) target.innerHTML = renderTaskPackageCheck(result);
     toast(checkToastMessage(result), result.status === 'failure' ? 'error' : 'success');
 }
 
@@ -2119,10 +2849,7 @@ function showDeliveryPreview(message) {
             <div class="modal modal-wide">
                 <h2>Delivery Preview</h2>
                 <div class="preview-block">${esc(message || '(empty)')}</div>
-                <div class="modal-actions">
-                    <button class="btn" onclick="copyDeliveryPreview()">Copy</button>
-                    <button class="btn btn-primary" onclick="document.getElementById('preview-modal').remove()">Close</button>
-                </div>
+                <div class="modal-actions"><button class="btn" onclick="copyDeliveryPreview()">Copy</button><button class="btn btn-primary" onclick="document.getElementById('preview-modal').remove()">Close</button></div>
             </div>
         </div>
     `;
@@ -2160,11 +2887,7 @@ function promptImportTask() {
         <div class="modal-overlay" onclick="if(event.target===this)this.remove()">
             <div class="modal modal-wide">
                 <h2>Import Task Package</h2>
-                <div class="wizard-steps">
-                    <span class="current">Package</span>
-                    <span>Check</span>
-                    <span>Import</span>
-                </div>
+                <div class="wizard-steps"><span class="current">Package</span><span>Check</span><span>Import</span></div>
                 <div class="form-group">
                     <label class="form-label">Package Directory</label>
                     <div class="path-picker-row">
@@ -2172,17 +2895,10 @@ function promptImportTask() {
                         <button class="btn" id="import-pick-button" onclick="pickImportDirectory()">Browse</button>
                     </div>
                 </div>
-                <label class="checkbox-row">
-                    <input type="checkbox" id="import-enabled-input" checked />
-                    <span>Enable after import</span>
-                </label>
+                <label class="checkbox-row"><input type="checkbox" id="import-enabled-input" checked /><span>Enable after import</span></label>
                 <div id="import-error" style="color:var(--danger);font-size:13px;display:none;margin-bottom:12px"></div>
                 <div id="import-check-result" class="import-check-slot"></div>
-                <div class="modal-actions">
-                    <button class="btn" onclick="document.getElementById('import-modal').remove()">Cancel</button>
-                    <button class="btn" title="Run a diagnostic package probe before import. This does not create run history or satisfy dependencies." onclick="checkImportPackage()">Diagnostic Check</button>
-                    <button class="btn btn-primary" onclick="doImportTask()">Import</button>
-                </div>
+                <div class="modal-actions"><button class="btn" onclick="document.getElementById('import-modal').remove()">Cancel</button><button class="btn" title="Run a diagnostic package probe before import. This does not create run history or satisfy dependencies." onclick="checkImportPackage()">Diagnostic Check</button><button class="btn btn-primary" onclick="doImportTask()">Import</button></div>
             </div>
         </div>
     `;
@@ -2199,7 +2915,6 @@ async function pickImportDirectory() {
     const input = document.getElementById('import-path-input');
     const button = document.getElementById('import-pick-button');
     const errEl = document.getElementById('import-error');
-    const checkEl = document.getElementById('import-check-result');
     if (!input || !button) return;
 
     const previousText = button.textContent;
@@ -2281,9 +2996,11 @@ async function doImportTask() {
     const input = document.getElementById('import-path-input');
     const errEl = document.getElementById('import-error');
     const path = input.value.trim();
-    if (!path) { input.style.borderColor = 'var(--danger)'; return; }
+    if (!path) {
+        input.style.borderColor = 'var(--danger)';
+        return;
+    }
     const enabled = document.getElementById('import-enabled-input')?.checked !== false;
-
     const result = await api('POST', '/api/tasks/import', { path, enabled });
     if (result && result.id) {
         document.getElementById('import-modal').remove();
@@ -2310,7 +3027,7 @@ async function importTask(path) {
     refreshAll();
 }
 
-// ===== Helpers =====
+// ===== Persistence & Helpers =====
 
 function setConnectionState(connected) {
     appState.connected = connected;
@@ -2352,9 +3069,7 @@ function saveOfflineCache() {
             deliveries: appState.deliveries,
             savedAt: new Date().toISOString()
         }));
-    } catch {
-        // Ignore quota or private-mode storage failures; live state still works.
-    }
+    } catch {}
 }
 
 function clearOfflineCache() {
@@ -2386,32 +3101,21 @@ function sanitizeTaskMapForCache(taskDetails) {
 function sanitizeTaskForCache(task) {
     const copy = cloneJSON(task);
     if (!copy || typeof copy !== 'object') return copy;
-    if (copy.manifest?.runtime?.env) {
-        copy.manifest.runtime.env = {};
-    }
+    if (copy.manifest?.runtime?.env) copy.manifest.runtime.env = {};
     if (Array.isArray(copy.manifest?.delivery?.inlineProfiles)) {
-        copy.manifest.delivery.inlineProfiles = copy.manifest.delivery.inlineProfiles.map(profile => ({
-            ...profile,
-            config: {}
-        }));
+        copy.manifest.delivery.inlineProfiles = copy.manifest.delivery.inlineProfiles.map(profile => ({ ...profile, config: {} }));
     }
     return copy;
 }
 
 function sanitizeRunHistoriesForCache(runHistories) {
-    return Object.fromEntries(Object.entries(runHistories || {}).map(([taskID, runs]) => [
-        taskID,
-        Array.isArray(runs) ? runs.map(sanitizeRunForCache) : []
-    ]));
+    return Object.fromEntries(Object.entries(runHistories || {}).map(([taskID, runs]) => [taskID, Array.isArray(runs) ? runs.map(sanitizeRunForCache) : []]));
 }
 
 function sanitizeRunForCache(run) {
     if (!run || typeof run !== 'object') return run;
     const outcome = run.outcome || {};
-    const parsed = outcome.parsedResult ? {
-        status: outcome.parsedResult.status || '',
-        summary: outcome.parsedResult.summary || ''
-    } : undefined;
+    const parsed = outcome.parsedResult ? { status: outcome.parsedResult.status || '', summary: outcome.parsedResult.summary || '' } : undefined;
     const sanitized = {
         id: run.id,
         taskID: run.taskID,
@@ -2425,9 +3129,7 @@ function sanitizeRunForCache(run) {
             durationMs: outcome.durationMs || 0
         }
     };
-    if (parsed) {
-        sanitized.outcome.parsedResult = parsed;
-    }
+    if (parsed) sanitized.outcome.parsedResult = parsed;
     return sanitized;
 }
 
@@ -2472,7 +3174,7 @@ function formatDurationSeconds(seconds) {
 }
 
 function esc(s) {
-    if (!s) return '';
+    if (!s && s !== 0) return '';
     const div = document.createElement('div');
     div.textContent = String(s);
     return div.innerHTML;
@@ -2505,14 +3207,7 @@ function renderInlineNotice(message, tone = 'warning') {
 
 function renderNextRuns(times) {
     if (!Array.isArray(times) || times.length === 0) return '';
-    return `<div class="next-run-list">
-        ${times.map((time, index) => `
-            <div class="next-run-row">
-                <span>${index === 0 ? 'Next' : `#${index + 1}`}</span>
-                <strong>${formatTime(time)}</strong>
-            </div>
-        `).join('')}
-    </div>`;
+    return `<div class="next-run-list">${times.map((time, index) => `<div class="next-run-row"><span>${index === 0 ? 'Next' : `#${index + 1}`}</span><strong>${formatTime(time)}</strong></div>`).join('')}</div>`;
 }
 
 function renderTaskPackageCheck(result) {
@@ -2530,31 +3225,14 @@ function renderTaskPackageCheck(result) {
                 <span class="badge badge-${statusBadgeClass(result.status)}">${esc(result.status || 'unknown')}</span>
             </div>
             <div class="check-grid">
-                <div class="check-step">
-                    <span>Manifest</span>
-                    <strong>${issues.some(i => i.severity === 'error') ? 'failed' : 'valid'}</strong>
-                </div>
-                <div class="check-step">
-                    <span>Environment</span>
-                    <strong>${esc(result.environment?.status || 'pending')}</strong>
-                </div>
-                <div class="check-step">
-                    <span>Run</span>
-                    <strong>${esc(run?.status || 'not run')}</strong>
-                </div>
+                <div class="check-step"><span>Manifest</span><strong>${issues.some(i => i.severity === 'error') ? 'failed' : 'valid'}</strong></div>
+                <div class="check-step"><span>Environment</span><strong>${esc(result.environment?.status || 'pending')}</strong></div>
+                <div class="check-step"><span>Run</span><strong>${esc(run?.status || 'not run')}</strong></div>
             </div>
             ${result.name ? `<div class="manifest-row"><span class="label">Task</span><span class="value">${esc(result.name)}</span></div>` : ''}
             ${result.manifestPath ? `<div class="manifest-row"><span class="label">Manifest</span><span class="value">${esc(result.manifestPath)}</span></div>` : ''}
             ${renderNextRuns(result.nextRuns || [])}
-            ${issues.length ? `<div class="check-issues">
-                ${issues.map(issue => `
-                    <div class="check-issue ${esc(issue.severity)}">
-                        <span>${esc(issue.severity)}</span>
-                        <strong>${esc(issue.path)}</strong>
-                        <p>${esc(issue.message)}</p>
-                    </div>
-                `).join('')}
-            </div>` : ''}
+            ${issues.length ? `<div class="check-issues">${issues.map(issue => `<div class="check-issue ${esc(issue.severity)}"><span>${esc(issue.severity)}</span><strong>${esc(issue.path)}</strong><p>${esc(issue.message)}</p></div>`).join('')}</div>` : ''}
             ${result.environment?.status === 'failure' ? `<div class="delivery-error">${esc(result.environment.message)}</div>` : ''}
             ${run ? renderRunDiagnosis({ id: `check-${Date.now()}`, diagnosis: run.diagnostics, outcome: { exitCode: run.exitCode, timedOut: run.timedOut, durationMs: run.durationMs } }, { compact: true }) : ''}
             ${run?.stdoutTail ? `<h3 class="check-log-title">STDOUT</h3><div class="log-block check-log">${esc(run.stdoutTail)}</div>` : ''}
@@ -2580,14 +3258,8 @@ function renderRunDiagnosis(run, options = {}) {
                     <span class="badge badge-${statusBadgeClass(diagnosis.status)}">${esc(diagnosis.status || 'unknown')}</span>
                 </div>
             </div>
-            ${causes.length ? `<div class="diagnosis-list">
-                <span>Causes</span>
-                ${causes.map(cause => `<p>${esc(cause)}</p>`).join('')}
-            </div>` : ''}
-            ${actions.length ? `<div class="diagnosis-list">
-                <span>Next Actions</span>
-                ${actions.map(action => `<p>${esc(action)}</p>`).join('')}
-            </div>` : ''}
+            ${causes.length ? `<div class="diagnosis-list"><span>Causes</span>${causes.map(cause => `<p>${esc(cause)}</p>`).join('')}</div>` : ''}
+            ${actions.length ? `<div class="diagnosis-list"><span>Next Actions</span>${actions.map(action => `<p>${esc(action)}</p>`).join('')}</div>` : ''}
             ${!options.compact ? `<button class="btn btn-sm" onclick="copyRunDiagnostics('${esc(run.id)}')">Copy Diagnostics</button>` : ''}
         </div>
     `;
@@ -2644,7 +3316,8 @@ function runStatusFor(run) {
 }
 
 function normalizeRunStatus(status) {
-    return String(status || '').toLowerCase() === 'failed' ? 'failure' : String(status || '').toLowerCase();
+    const lower = String(status || '').toLowerCase();
+    return lower === 'failed' ? 'failure' : lower;
 }
 
 function runStatusBadge(status) {
@@ -2666,105 +3339,112 @@ function runHistoryStatusLabel(status) {
 function deliveryStatusBadge(status) {
     if (status === 'success') return 'success';
     if (status === 'skipped') return 'muted';
-    return 'danger';
+    if (status === 'failed') return 'danger';
+    return 'warning';
 }
 
 function deliveryHistorySummary(results) {
-    if (!Array.isArray(results) || results.length === 0) {
-        return { status: 'none', label: 'delivery not sent' };
+    const summary = { status: 'none', success: 0, failed: 0, skipped: 0 };
+    for (const result of results || []) {
+        if (result.status === 'success') summary.success += 1;
+        else if (result.status === 'skipped') summary.skipped += 1;
+        else if (result.status) summary.failed += 1;
     }
-    const counts = results.reduce((acc, result) => {
-        const status = String(result.status || '').toLowerCase();
-        if (status === 'success') acc.sent += 1;
-        else if (status === 'skipped') acc.skipped += 1;
-        else if (status === 'failed' || status === 'failure') acc.failed += 1;
-        else acc.unknown += 1;
-        return acc;
-    }, { sent: 0, failed: 0, skipped: 0, unknown: 0 });
-    const total = results.length;
-    if (counts.failed > 0) {
-        return counts.failed === total
-            ? { status: 'failed', label: 'delivery failed' }
-            : { status: 'failed', label: 'delivery partial' };
-    }
-    if (counts.sent > 0) return { status: 'success', label: 'delivery sent' };
-    if (counts.skipped > 0) return { status: 'skipped', label: 'delivery skipped' };
-    return { status: 'none', label: 'delivery unknown' };
+    if (summary.failed > 0) summary.status = 'failed';
+    else if (summary.success > 0) summary.status = 'success';
+    else if (summary.skipped > 0) summary.status = 'skipped';
+    return summary;
 }
 
 function renderDeliveryHistorySummary(summary) {
-    const badgeClass = summary.status === 'none' ? 'muted' : deliveryStatusBadge(summary.status);
-    return `<span class="run-history-status-group delivery-history-status">
-        <span class="badge badge-${badgeClass}">${esc(summary.label)}</span>
-    </span>`;
+    if (!summary || summary.status === 'none') return '';
+    return `<span class="badge badge-${deliveryStatusBadge(summary.status)}">delivery ${summary.status}</span>`;
 }
 
-function formatDurationMs(ms) {
-    if (!ms) return '—';
-    if (ms < 1000) return `${ms}ms`;
-    return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function formatBytes(bytes) {
-    bytes = Number(bytes || 0);
-    if (bytes < 1024) return `${bytes}B`;
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)}KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(1)}MB`;
-}
-
-function parseNonNegativeInt(value, fallback) {
-    const parsed = Number.parseInt(String(value || ''), 10);
-    if (!Number.isFinite(parsed) || parsed < 0) return fallback;
-    return parsed;
-}
-
-function formatTime(iso) {
-    if (!iso) return '—';
+function formatTime(value) {
+    if (!value) return '—';
     try {
-        const d = new Date(iso);
-        if (!Number.isFinite(d.getTime()) || d.getFullYear() < 1971) return '—';
+        const date = new Date(value);
+        if (!Number.isFinite(date.getTime()) || date.getFullYear() < 1971) return '—';
         const now = new Date();
-        const diffMs = now - d;
+        const diffMs = now - date;
 
         if (diffMs > 0 && diffMs < 86400000) {
             if (diffMs < 60000) return 'just now';
-            if (diffMs < 3600000) return `${Math.floor(diffMs/60000)}m ago`;
-            return `${Math.floor(diffMs/3600000)}h ago`;
+            if (diffMs < 3600000) return `${Math.floor(diffMs / 60000)}m ago`;
+            return `${Math.floor(diffMs / 3600000)}h ago`;
         }
 
-        return d.toLocaleString(undefined, {
-            month: 'short', day: 'numeric',
-            hour: '2-digit', minute: '2-digit'
+        return date.toLocaleString(undefined, {
+            month: 'short',
+            day: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
         });
-    } catch { return '—'; }
+    } catch {
+        return '—';
+    }
 }
 
-function hasRealTime(iso) {
-    if (!iso) return false;
-    const d = new Date(iso);
-    return Number.isFinite(d.getTime()) && d.getFullYear() >= 1971;
+function hasRealTime(value) {
+    if (!value) return false;
+    const date = new Date(value);
+    return !Number.isNaN(date.getTime()) && date.getFullYear() > 1971;
 }
 
-// ===== Toast Notifications =====
+function formatBytes(value) {
+    const bytes = Number(value || 0);
+    if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+    const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    let unitIndex = 0;
+    let current = bytes;
+    while (current >= 1024 && unitIndex < units.length - 1) {
+        current /= 1024;
+        unitIndex += 1;
+    }
+    const digits = current >= 100 || unitIndex === 0 ? 0 : current >= 10 ? 1 : 2;
+    return `${current.toFixed(digits)} ${units[unitIndex]}`;
+}
 
-function toast(message, type = 'info') {
-    const icons = { success: '✅', error: '❌', info: 'ℹ️' };
-    const container = document.getElementById('toasts');
+function formatDurationMs(ms) {
+    const value = Number(ms || 0);
+    if (!Number.isFinite(value) || value <= 0) return '0s';
+    if (value < 1000) return `${value}ms`;
+    if (value < 60000) return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)}s`;
+    const totalSeconds = Math.floor(value / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    if (minutes < 60) return `${minutes}m ${seconds}s`;
+    const hours = Math.floor(minutes / 60);
+    const remMinutes = minutes % 60;
+    return `${hours}h ${remMinutes}m`;
+}
+
+function parseNonNegativeInt(value, fallback) {
+    const parsed = Number.parseInt(String(value || '').trim(), 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function hasActiveEditorState() {
+    if (document.querySelector('.modal-overlay')) return true;
+    const active = document.activeElement;
+    return !!active && active.matches('input, textarea, select, [contenteditable="true"]');
+}
+
+function toast(message, tone = 'info') {
+    const host = document.getElementById('toasts');
+    if (!host) return;
     const el = document.createElement('div');
-    el.className = `toast toast-${type}`;
-    el.innerHTML = `<span class="toast-icon">${icons[type] || icons.info}</span>${esc(message)}`;
-    container.appendChild(el);
-    setTimeout(() => {
-        el.classList.add('toast-out');
-        setTimeout(() => el.remove(), 300);
-    }, 3500);
+    el.className = `toast toast-${tone}`;
+    el.innerHTML = `<span class="toast-icon">${tone === 'success' ? '✅' : tone === 'error' ? '⚠️' : 'ℹ️'}</span><span>${esc(message)}</span>`;
+    host.appendChild(el);
+    setTimeout(() => el.classList.add('toast-out'), 2600);
+    setTimeout(() => el.remove(), 3200);
 }
-
-// ===== Logout =====
 
 function logout() {
-    localStorage.removeItem('cronplus_token');
     authToken = '';
+    localStorage.removeItem('cronplus_token');
     if (sseReconnectTimer) {
         clearTimeout(sseReconnectTimer);
         sseReconnectTimer = null;
@@ -2778,8 +3458,6 @@ function logout() {
     showLogin();
 }
 
-// ===== Auto-refresh =====
-
 setInterval(() => {
     if (document.getElementById('main-app').style.display !== 'none') {
         if (!hasActiveEditorState()) {
@@ -2788,11 +3466,4 @@ setInterval(() => {
     }
 }, 30000);
 
-function hasActiveEditorState() {
-    if (document.querySelector('.modal-overlay')) return true;
-    const active = document.activeElement;
-    return !!active && active.matches('input, textarea, select, [contenteditable="true"]');
-}
-
-// ===== Boot =====
 init();

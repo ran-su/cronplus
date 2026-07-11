@@ -33,6 +33,29 @@ func TestGetTaskRunsUnknownTaskReturns404(t *testing.T) {
 	}
 }
 
+func TestOperationsEndpointReturnsDiagnostics(t *testing.T) {
+	engine := core.NewEngine(store.New(filepath.Join(t.TempDir(), "state.db")), nil)
+	engine.RecordDaemonStart(time.Now())
+	if err := engine.PersistState(); err != nil {
+		t.Fatalf("PersistState: %v", err)
+	}
+	mux := http.NewServeMux()
+	Routes(mux, engine, "test")
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/operations", nil)
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body=%s", rec.Code, rec.Body.String())
+	}
+	var diagnostics models.OperationalDiagnostics
+	if err := json.Unmarshal(rec.Body.Bytes(), &diagnostics); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	if diagnostics.Persistence.Status != "healthy" || len(diagnostics.DaemonStarts) != 1 {
+		t.Fatalf("diagnostics = %+v", diagnostics)
+	}
+}
+
 func TestReadJSONRejectsBodyOverLimitEvenWithValidPrefix(t *testing.T) {
 	body := `{"value":"ok"}` + strings.Repeat(" ", (1<<20)+1)
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))

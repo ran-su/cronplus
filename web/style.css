@@ -1955,6 +1955,10 @@ tr:hover td { background: rgba(255,255,255,0.03); }
     gap: 12px;
 }
 
+.operations-list {
+    margin-top: 16px;
+}
+
 .active-run-log {
     max-height: 220px;
     margin-top: 6px;

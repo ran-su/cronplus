@@ -16,6 +16,7 @@ type State struct {
 	RunHistory       map[string][]models.RunRecord `json:"runHistory"`
 	ActiveRuns       []models.ActiveRunInfo        `json:"activeRuns,omitempty"`
 	CommandLog       []models.CommandRecord        `json:"commandLog"`
+	DaemonStarts     []time.Time                   `json:"daemonStarts,omitempty"`
 	Settings         Settings                      `json:"settings"`
 }
 
@@ -122,6 +123,9 @@ func normalizeState(state *State) {
 	}
 	if state.CommandLog == nil {
 		state.CommandLog = []models.CommandRecord{}
+	}
+	if state.DaemonStarts == nil {
+		state.DaemonStarts = []time.Time{}
 	}
 	if state.Settings.WebServerPort == 0 {
 		state.Settings.WebServerPort = 9876

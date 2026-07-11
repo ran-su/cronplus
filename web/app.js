@@ -10,6 +10,7 @@ let currentPage = 'dashboard';
 let appState = {
     status: null,
     health: null,
+    operations: null,
     tasks: [],
     taskDetails: {},
     taskDetailLoading: {},
@@ -33,6 +34,7 @@ let refreshQueued = false;
 let refreshQueuedForceRender = false;
 let deliveryPreviewText = '';
 let currentRouteInitialized = false;
+let operationsRefreshTimer = null;
 
 if ('scrollRestoration' in history) {
     history.scrollRestoration = 'manual';
@@ -373,6 +375,10 @@ function navigate(hash) {
     const routeChanged = !currentRouteInitialized || path !== currentPage;
     if (routeChanged) closeRouteModals();
     currentPage = path;
+	if (path !== '/operations' && operationsRefreshTimer) {
+		clearTimeout(operationsRefreshTimer);
+		operationsRefreshTimer = null;
+	}
     currentRouteInitialized = true;
 
     document.querySelectorAll('.nav-link').forEach(link => {
@@ -429,6 +435,9 @@ document.addEventListener('click', (e) => {
                 break;
             case 'retry-health':
                 loadHealth({ force: true });
+                break;
+            case 'retry-operations':
+                loadOperations({ force: true });
                 break;
             case 'save-retention':
                 saveRetentionPolicy();
@@ -503,6 +512,9 @@ function renderCurrentPageContent() {
     } else if (path === '/health') {
         content.innerHTML = renderHealth();
         loadHealth();
+    } else if (path === '/operations') {
+        content.innerHTML = renderOperations();
+        loadOperations();
     } else if (path === '/delivery') {
         content.innerHTML = renderDelivery();
     } else if (path === '/commands') {
@@ -2351,6 +2363,159 @@ function renderHealthContent() {
     const server = h.server || {};
     const browser = h.browser || {};
     return renderHealthBody(h, storage, server, browser);
+}
+
+// ===== Operations =====
+
+function renderOperations() {
+    return `
+        ${renderPageIntro(
+            'Runtime telemetry',
+            'Operations',
+            'Inspect scheduler timing, capacity decisions, persistence health, delivery latency, and daemon restart history.',
+            '<button class="btn" onclick="loadOperations({ force: true })">Refresh</button>'
+        )}
+        <div id="operations-content">${renderOperationsContent()}</div>
+    `;
+}
+
+async function loadOperations(options = {}) {
+    if (!options.force && appState.operations) {
+        const cached = document.getElementById('operations-content');
+        if (cached) setHTMLPreservingContentScroll(cached, renderOperationsContent());
+        scheduleOperationsRefresh();
+        return;
+    }
+    const data = await api('GET', '/api/operations');
+    const el = document.getElementById('operations-content');
+    if (!data || data.error) {
+        if (el) setHTMLPreservingContentScroll(el, renderInlineState('Operations unavailable', data?.message || 'CronPlus could not load operational telemetry.', 'error', 'Retry', 'data-action="retry-operations"'));
+        scheduleOperationsRefresh();
+        return;
+    }
+    appState.operations = data;
+    if (el) setHTMLPreservingContentScroll(el, renderOperationsContent());
+    scheduleOperationsRefresh();
+}
+
+function scheduleOperationsRefresh() {
+    if (operationsRefreshTimer) clearTimeout(operationsRefreshTimer);
+    if (currentPage !== '/operations') return;
+    operationsRefreshTimer = setTimeout(() => {
+        operationsRefreshTimer = null;
+        loadOperations({ force: true });
+    }, 5000);
+}
+
+function operationalTone(value, warning, danger) {
+    if (Number(value || 0) >= danger) return 'danger';
+    if (Number(value || 0) >= warning) return 'warning';
+    return 'success';
+}
+
+function renderOperationsContent() {
+    const ops = appState.operations;
+    if (!ops) return renderInlineState('Loading operations', '', 'neutral');
+    const scheduler = ops.scheduler || {};
+    const persistence = ops.persistence || {};
+    const delivery = ops.delivery || {};
+    const lagTone = operationalTone(scheduler.lastLagMs, 1000, 10000);
+    const persistenceTone = persistence.status === 'error' ? 'danger' : persistence.status === 'healthy' ? 'success' : 'neutral';
+    return `
+        ${renderSummaryStrip([
+            { label: 'Scheduler lag', value: formatDurationMs(scheduler.lastLagMs || 0) },
+            { label: 'Queued runs', value: String(scheduler.queueDepth || 0) },
+            { label: 'Skipped runs', value: String(scheduler.skippedTotal || 0) },
+            { label: 'Persistence', value: persistence.status || 'not measured' },
+            { label: 'Delivery avg', value: formatDurationMs(delivery.averageLatencyMs || 0) },
+            { label: 'Restarts (24h)', value: String(ops.restarts24h || 0) }
+        ])}
+        ${renderResourcePanel('Scheduler and capacity', 'Lag compares the ticker deadline with when CronPlus actually began evaluating schedules. CronPlus currently skips excess work instead of queueing it.', renderSchedulerOperations(scheduler), { tone: lagTone })}
+        ${renderResourcePanel('Persistence health', 'SQLite state loads and saves are timed, and the latest outcome is retained for this daemon process.', renderPersistenceOperations(persistence), { tone: persistenceTone })}
+        ${renderResourcePanel('Delivery latency', 'Latency measures actual driver send calls. Message content and credentials are never included in this telemetry.', renderDeliveryOperations(delivery), { tone: delivery.failures ? 'warning' : 'success' })}
+        ${renderResourcePanel('Daemon starts', 'The newest 20 daemon start timestamps are persisted so unexpected restart patterns remain visible after a restart.', renderDaemonStarts(ops), { tone: (ops.restarts24h || 0) > 2 ? 'warning' : 'success' })}
+    `;
+}
+
+function renderSchedulerOperations(scheduler) {
+    const skipped = scheduler.recentSkipped || [];
+    return `
+        <div class="health-grid">
+            <div class="detail-card">
+                <h3>Timing</h3>
+                ${renderKeyValueRow('Last tick', scheduler.lastTickAt ? formatTime(scheduler.lastTickAt) : 'Waiting for first 30s tick')}
+                ${renderKeyValueRow('Last lag', formatDurationMs(scheduler.lastLagMs || 0))}
+                ${renderKeyValueRow('Max lag', formatDurationMs(scheduler.maxLagMs || 0))}
+                ${renderKeyValueRow('Ticks observed', String(scheduler.ticks || 0))}
+            </div>
+            <div class="detail-card">
+                <h3>Capacity</h3>
+                ${renderKeyValueRow('Active runs', `${scheduler.activeRuns || 0} / ${scheduler.maxConcurrentRuns || 0}`)}
+                ${renderKeyValueRow('Queue depth', String(scheduler.queueDepth || 0))}
+                ${renderKeyValueRow('Queue policy', scheduler.queueSupported ? 'enabled' : 'not supported — excess runs skip')}
+                ${renderKeyValueRow('Skipped total', String(scheduler.skippedTotal || 0))}
+            </div>
+        </div>
+        ${skipped.length ? `<div class="run-history-list operations-list">${skipped.map(item => `
+            <div class="run-history-row">
+                <div class="run-history-primary"><span class="badge badge-warning">${esc(item.reason)}</span><strong>${esc(item.taskName || item.taskID)}</strong></div>
+                <div class="run-history-meta"><span><span class="run-history-label">Scheduled</span>${formatTime(item.scheduledAt)}</span><span><span class="run-history-label">Observed</span>${formatTime(item.occurredAt)}</span></div>
+                <div class="run-history-summary">${esc(item.message || 'Scheduled run skipped')}</div>
+            </div>`).join('')}</div>` : renderEmptyState('✓', 'No skipped scheduled runs', 'No scheduler capacity or overlap decisions have skipped work during this daemon process.')}
+    `;
+}
+
+function renderPersistenceOperations(persistence) {
+    return `<div class="health-grid"><div class="detail-card">
+        <h3>Latest state write</h3>
+        ${renderKeyValueRow('Status', persistence.status || 'not measured')}
+        ${renderKeyValueRow('Last attempt', persistence.lastAttemptAt ? formatTime(persistence.lastAttemptAt) : 'Never')}
+        ${renderKeyValueRow('Duration', formatDurationMs(persistence.lastDurationMs || 0))}
+        ${renderKeyValueRow('Last success', persistence.lastSuccessAt ? formatTime(persistence.lastSuccessAt) : 'Never')}
+        ${persistence.lastError ? `<div class="delivery-error">${esc(persistence.lastError)}</div>` : ''}
+    </div><div class="detail-card">
+        <h3>Process totals</h3>
+        ${renderKeyValueRow('Attempts', String(persistence.attempts || 0))}
+        ${renderKeyValueRow('Successful', String(persistence.successes || 0))}
+        ${renderKeyValueRow('Failed', String(persistence.failures || 0))}
+        ${renderKeyValueRow('Last failure', persistence.lastFailureAt ? formatTime(persistence.lastFailureAt) : 'None')}
+    </div></div>`;
+}
+
+function renderDeliveryOperations(delivery) {
+    const attempts = delivery.recentAttempts || [];
+    return `
+        <div class="health-grid"><div class="detail-card">
+            <h3>Latency</h3>
+            ${renderKeyValueRow('Latest', formatDurationMs(delivery.lastLatencyMs || 0))}
+            ${renderKeyValueRow('Average', formatDurationMs(delivery.averageLatencyMs || 0))}
+            ${renderKeyValueRow('Maximum', formatDurationMs(delivery.maxLatencyMs || 0))}
+        </div><div class="detail-card">
+            <h3>Outcomes</h3>
+            ${renderKeyValueRow('Attempts', String(delivery.attempts || 0))}
+            ${renderKeyValueRow('Successful', String(delivery.successes || 0))}
+            ${renderKeyValueRow('Failed', String(delivery.failures || 0))}
+        </div></div>
+        ${attempts.length ? `<div class="run-history-list operations-list">${attempts.map(item => `
+            <div class="run-history-row">
+                <div class="run-history-primary"><span class="badge badge-${item.status === 'success' ? 'success' : 'danger'}">${esc(item.status)}</span><strong>${esc(item.profileName || item.profileID)}</strong><span class="badge badge-muted">${esc(item.driverType)}</span></div>
+                <div class="run-history-meta"><span><span class="run-history-label">Task</span>${esc(item.taskName || item.taskID)}</span><span><span class="run-history-label">Latency</span>${formatDurationMs(item.latencyMs || 0)}</span><span><span class="run-history-label">At</span>${formatTime(item.occurredAt)}</span></div>
+                ${item.error ? `<div class="run-history-summary">${esc(item.error)}</div>` : ''}
+            </div>`).join('')}</div>` : renderEmptyState('📬', 'No delivery attempts yet', 'Latency appears after CronPlus calls a configured delivery driver.')}
+    `;
+}
+
+function renderDaemonStarts(ops) {
+    const starts = ops.daemonStarts || [];
+    return `<div class="health-grid"><div class="detail-card">
+        <h3>Current process</h3>
+        ${renderKeyValueRow('Started', formatTime(ops.processStartedAt))}
+        ${renderKeyValueRow('Uptime', formatDurationMs(ops.uptimeMs || 0))}
+        ${renderKeyValueRow('Restarts in 24h', String(ops.restarts24h || 0))}
+    </div><div class="detail-card">
+        <h3>Recent starts</h3>
+        ${starts.length ? starts.map((startedAt, index) => renderKeyValueRow(index === 0 ? 'Current' : `Previous ${index}`, formatTime(startedAt))).join('') : '<p class="card-copy">No persisted start history.</p>'}
+    </div></div>`;
 }
 
 // ===== Delivery =====

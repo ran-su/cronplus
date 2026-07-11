@@ -94,8 +94,16 @@ func main() {
 	engine.SetScheduler(scheduler)
 
 	// Restore persisted state
+	restoreSucceeded := true
 	if err := engine.RestoreState(); err != nil {
+		restoreSucceeded = false
 		log.Printf("[CronPlus] Warning: failed to restore state: %v", err)
+	}
+	engine.RecordDaemonStart(time.Now())
+	if restoreSucceeded {
+		if err := engine.PersistState(); err != nil {
+			log.Printf("[CronPlus] Warning: failed to persist daemon start: %v", err)
+		}
 	}
 	settings := engine.Settings()
 	settings.WebServerPort = listenPort

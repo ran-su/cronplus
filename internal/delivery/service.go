@@ -5,7 +5,9 @@ import (
 	"log"
 	"regexp"
 	"strings"
+	"sync"
 	"text/template"
+	"time"
 
 	"github.com/ran-su/cronplus/internal/models"
 )
@@ -18,7 +20,9 @@ type Driver interface {
 
 // Service orchestrates deliveries after a task run.
 type Service struct {
-	drivers map[string]Driver
+	drivers     map[string]Driver
+	metricsMu   sync.RWMutex
+	diagnostics models.DeliveryDiagnostics
 }
 
 // NewService creates a delivery service with the given drivers.
@@ -107,7 +111,21 @@ func (s *Service) Deliver(
 			continue
 		}
 
+		startedAt := time.Now()
 		err := driver.Send(profile, message)
+		latencyMs := time.Since(startedAt).Milliseconds()
+		s.recordAttempt(models.DeliveryAttempt{
+			OccurredAt:  time.Now(),
+			TaskID:      task.ID,
+			TaskName:    task.DisplayName,
+			RunID:       record.ID,
+			ProfileID:   profile.ID,
+			ProfileName: profile.Name,
+			DriverType:  profile.DriverType,
+			LatencyMs:   latencyMs,
+			Status:      deliveryAttemptStatus(err),
+			Error:       deliveryAttemptError(err),
+		})
 		if err != nil {
 			log.Printf("[CronPlus] Delivery failed to %s: %v", profile.Name, err)
 			results = append(results, models.DeliveryResult{
@@ -127,6 +145,53 @@ func (s *Service) Deliver(
 	}
 
 	return results
+}
+
+func (s *Service) Diagnostics() models.DeliveryDiagnostics {
+	s.metricsMu.RLock()
+	defer s.metricsMu.RUnlock()
+	result := s.diagnostics
+	result.RecentAttempts = append([]models.DeliveryAttempt(nil), s.diagnostics.RecentAttempts...)
+	return result
+}
+
+func (s *Service) recordAttempt(attempt models.DeliveryAttempt) {
+	s.metricsMu.Lock()
+	defer s.metricsMu.Unlock()
+	d := &s.diagnostics
+	d.Attempts++
+	d.LastLatencyMs = attempt.LatencyMs
+	if attempt.LatencyMs > d.MaxLatencyMs {
+		d.MaxLatencyMs = attempt.LatencyMs
+	}
+	if d.Attempts == 1 {
+		d.AverageLatencyMs = attempt.LatencyMs
+	} else {
+		d.AverageLatencyMs += (attempt.LatencyMs - d.AverageLatencyMs) / d.Attempts
+	}
+	if attempt.Status == "success" {
+		d.Successes++
+	} else {
+		d.Failures++
+	}
+	d.RecentAttempts = append([]models.DeliveryAttempt{attempt}, d.RecentAttempts...)
+	if len(d.RecentAttempts) > 20 {
+		d.RecentAttempts = d.RecentAttempts[:20]
+	}
+}
+
+func deliveryAttemptStatus(err error) string {
+	if err != nil {
+		return "failed"
+	}
+	return "success"
+}
+
+func deliveryAttemptError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "delivery driver returned an error"
 }
 
 type profileLookup struct {

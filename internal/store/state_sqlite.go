@@ -256,9 +256,13 @@ func readSQLiteState(db *sql.DB) (*State, error) {
 		RunHistory:       map[string][]models.RunRecord{},
 		ActiveRuns:       []models.ActiveRunInfo{},
 		CommandLog:       []models.CommandRecord{},
+		DaemonStarts:     []time.Time{},
 		Settings:         Settings{WebServerPort: 9876, WebServerBind: "127.0.0.1"},
 	}
 	if err := readSQLiteSettings(db, &state.Settings); err != nil {
+		return nil, err
+	}
+	if err := readSQLiteDaemonStarts(db, &state.DaemonStarts); err != nil {
 		return nil, err
 	}
 	tasks, err := readSQLiteTasks(db)
@@ -287,6 +291,21 @@ func readSQLiteState(db *sql.DB) (*State, error) {
 	}
 	state.CommandLog = commandLog
 	return state, nil
+}
+
+func readSQLiteDaemonStarts(db *sql.DB, starts *[]time.Time) error {
+	var value string
+	err := db.QueryRow(`SELECT value FROM settings WHERE key = 'daemonStarts'`).Scan(&value)
+	if err == sql.ErrNoRows {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("failed to read daemon starts: %w", err)
+	}
+	if err := json.Unmarshal([]byte(value), starts); err != nil {
+		return fmt.Errorf("failed to decode daemon starts: %w", err)
+	}
+	return nil
 }
 
 func readSQLiteSettings(db *sql.DB, settings *Settings) error {
@@ -522,6 +541,10 @@ func readSQLiteCommandLog(db *sql.DB) ([]models.CommandRecord, error) {
 }
 
 func writeSQLiteState(db *sql.DB, state *State) error {
+	daemonStartsJSON, err := marshalJSONString(state.DaemonStarts)
+	if err != nil {
+		return fmt.Errorf("failed to encode daemon starts: %w", err)
+	}
 	tx, err := db.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to start SQLite state write: %w", err)
@@ -548,12 +571,14 @@ func writeSQLiteState(db *sql.DB, state *State) error {
 		('webServerBind', ?),
 		('maxRunsPerTask', ?),
 		('maxRunAgeDays', ?),
-		('maxRunOutputKB', ?)`,
+		('maxRunOutputKB', ?),
+		('daemonStarts', ?)`,
 		strconv.Itoa(state.Settings.WebServerPort),
 		state.Settings.WebServerBind,
 		strconv.Itoa(state.Settings.MaxRunsPerTask),
 		strconv.Itoa(state.Settings.MaxRunAgeDays),
-		strconv.Itoa(state.Settings.MaxRunOutputKB)); err != nil {
+		strconv.Itoa(state.Settings.MaxRunOutputKB),
+		daemonStartsJSON); err != nil {
 		return fmt.Errorf("failed to write settings: %w", err)
 	}
 	if err := writeSQLiteTasks(tx, state.Tasks); err != nil {

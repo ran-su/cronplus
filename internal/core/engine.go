@@ -21,6 +21,7 @@ import (
 // Engine is the central state owner for the daemon.
 type Engine struct {
 	mu                   sync.RWMutex
+	opsMu                sync.RWMutex
 	tasks                []*models.Task
 	deliveryProfiles     []models.DeliveryProfile
 	runHistory           map[string][]models.RunRecord
@@ -31,6 +32,9 @@ type Engine struct {
 	envSetupGenerations  map[string]int64 // Invalidates stale environment setup workers.
 	envSetupLocks        map[string]*sync.Mutex
 	commandLog           []models.CommandRecord
+	daemonStarts         []time.Time
+	processStartedAt     time.Time
+	operations           operationalState
 
 	store                *store.Store
 	scheduler            *Scheduler
@@ -68,6 +72,7 @@ func NewEngine(s *store.Store, deliverySvc *delivery.Service) *Engine {
 		taskGenerations:      make(map[string]int64),
 		envSetupGenerations:  make(map[string]int64),
 		envSetupLocks:        make(map[string]*sync.Mutex),
+		processStartedAt:     time.Now(),
 		store:                s,
 		Broker:               NewEventBroker(),
 		DeliveryService:      deliverySvc,
@@ -136,7 +141,9 @@ func (e *Engine) CleanupRetentionNow() models.RetentionCleanupReport {
 
 // RestoreState loads persisted state and re-imports task manifests.
 func (e *Engine) RestoreState() error {
+	startedAt := time.Now()
 	state, err := e.store.Load()
+	e.recordPersistenceAttempt(startedAt, err)
 	if err != nil {
 		return err
 	}
@@ -145,6 +152,7 @@ func (e *Engine) RestoreState() error {
 	e.deliveryProfiles = cloneDeliveryProfiles(state.DeliveryProfiles)
 	e.runHistory = cloneRunHistoryMap(state.RunHistory)
 	e.commandLog = append([]models.CommandRecord(nil), state.CommandLog...)
+	e.daemonStarts = append([]time.Time(nil), state.DaemonStarts...)
 	if state.Settings.WebServerPort > 0 || state.Settings.WebServerBind != "" {
 		e.applySettingsLocked(state.Settings)
 	}
@@ -169,6 +177,7 @@ func (e *Engine) RestoreState() error {
 
 // PersistState saves the current state to disk.
 func (e *Engine) PersistState() error {
+	startedAt := time.Now()
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 
@@ -195,10 +204,13 @@ func (e *Engine) PersistState() error {
 		RunHistory:       cloneRunHistoryMap(e.runHistory),
 		ActiveRuns:       activeRuns,
 		CommandLog:       append([]models.CommandRecord(nil), e.commandLog...),
+		DaemonStarts:     append([]time.Time(nil), e.daemonStarts...),
 		Settings:         e.settings,
 	}
 
-	return e.store.Save(state)
+	err := e.store.Save(state)
+	e.recordPersistenceAttempt(startedAt, err)
+	return err
 }
 
 // --- Task Management ---

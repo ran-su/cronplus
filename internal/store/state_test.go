@@ -84,7 +84,8 @@ func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
 		CommandLog: []models.CommandRecord{
 			{ID: "cmd-1", ChannelType: "telegram", ChatID: "1", CommandText: "/run task-1", MatchedCommand: "/run", ReplyText: "Started", ReceivedAt: startedAt},
 		},
-		Settings: Settings{WebServerPort: 9999, WebServerBind: "127.0.0.1", MaxRunsPerTask: 12, MaxRunAgeDays: 30, MaxRunOutputKB: 128},
+		DaemonStarts: []time.Time{startedAt, finishedAt},
+		Settings:     Settings{WebServerPort: 9999, WebServerBind: "127.0.0.1", MaxRunsPerTask: 12, MaxRunAgeDays: 30, MaxRunOutputKB: 128},
 	}
 
 	if err := st.Save(state); err != nil {
@@ -116,6 +117,9 @@ func TestSQLiteSaveLoadRoundTrip(t *testing.T) {
 	}
 	if len(got.CommandLog) != 1 || got.CommandLog[0].ID != "cmd-1" {
 		t.Fatalf("command log = %+v", got.CommandLog)
+	}
+	if len(got.DaemonStarts) != 2 || !got.DaemonStarts[0].Equal(startedAt) || !got.DaemonStarts[1].Equal(finishedAt) {
+		t.Fatalf("daemon starts = %+v", got.DaemonStarts)
 	}
 	if got.Settings.WebServerPort != 9999 || got.Settings.MaxRunsPerTask != 12 || got.Settings.MaxRunAgeDays != 30 || got.Settings.MaxRunOutputKB != 128 {
 		t.Fatalf("settings = %+v", got.Settings)
@@ -261,7 +265,7 @@ func TestSQLiteSavePreservesExistingRunHistoryOnFailedRewrite(t *testing.T) {
 					FinishedAt: time.Date(2026, 6, 14, 12, 0, 1, 0, time.UTC),
 					Outcome: models.RunOutcome{
 						ParsedResult: &models.ParsedResult{Status: "success", Summary: "ok"},
-						Diagnostics: models.RunDiagnostics{},
+						Diagnostics:  models.RunDiagnostics{},
 					},
 				},
 			},
@@ -310,4 +314,3 @@ func TestSQLiteSavePreservesExistingRunHistoryOnFailedRewrite(t *testing.T) {
 		t.Fatalf("run history after failed save = %+v, want preserved prior data", got.RunHistory)
 	}
 }
-

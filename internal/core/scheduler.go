@@ -65,6 +65,7 @@ func (s *Scheduler) primeTasks(now time.Time) {
 }
 
 func (s *Scheduler) tick(now time.Time) {
+	s.engine.recordSchedulerTick(now, time.Now())
 	tasks := s.engine.Tasks()
 
 	for _, task := range tasks {
@@ -84,6 +85,7 @@ func (s *Scheduler) tick(now time.Time) {
 
 		if s.engine.IsRunning(task.ID) {
 			log.Printf("[CronPlus] Skipping scheduled run for '%s' — already running.", task.DisplayName)
+			s.engine.recordScheduledRunSkipped(task.ID, task.DisplayName, now, ErrTaskAlreadyRunning)
 			continue
 		}
 
@@ -93,6 +95,7 @@ func (s *Scheduler) tick(now time.Time) {
 		go func(taskID, taskName string) {
 			if _, err := s.engine.RunTask(taskID, "schedule"); err != nil {
 				log.Printf("[CronPlus] Scheduled run failed for '%s': %v", taskName, err)
+				s.engine.recordScheduledRunSkipped(taskID, taskName, now, err)
 			}
 		}(taskID, taskName)
 	}

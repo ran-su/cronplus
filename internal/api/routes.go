@@ -28,6 +28,7 @@ func RoutesWithInfo(mux *http.ServeMux, engine *core.Engine, info ServerInfo) {
 	}
 	mux.HandleFunc("GET /api/status", handleGetStatus(engine, info))
 	mux.HandleFunc("GET /api/health", handleGetHealth(engine, info))
+	mux.HandleFunc("GET /api/operations", handleGetOperations(engine))
 	mux.HandleFunc("POST /api/schedules/preview", handleSchedulePreview(engine))
 	mux.HandleFunc("POST /api/system/pick-directory", handlePickDirectory(pickDirectory))
 	mux.HandleFunc("GET /api/runs/active", handleGetActiveRuns(engine))

@@ -3,6 +3,7 @@ package delivery
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/ran-su/cronplus/internal/models"
 )
@@ -11,6 +12,20 @@ import (
 type mockDriver struct {
 	sentMessages []string
 	failOnSend   bool
+}
+
+type delayedDriver struct {
+	delay time.Duration
+	fail  bool
+}
+
+func (d *delayedDriver) Type() string { return "delayed" }
+func (d *delayedDriver) Send(profile models.DeliveryProfile, message string) error {
+	time.Sleep(d.delay)
+	if d.fail {
+		return fmt.Errorf("delayed failure")
+	}
+	return nil
 }
 
 func (m *mockDriver) Type() string { return "mock" }
@@ -80,6 +95,27 @@ func TestDeliver_MatchesSendOn(t *testing.T) {
 	}
 	if len(mock.sentMessages) != 0 {
 		t.Fatalf("expected no messages, got %q", mock.sentMessages)
+	}
+}
+
+func TestDeliveryDiagnosticsTracksLatencyAndOutcome(t *testing.T) {
+	driver := &delayedDriver{delay: 5 * time.Millisecond}
+	svc := NewService(driver)
+	profiles := []models.DeliveryProfile{{ID: "p1", Name: "Delayed", DriverType: "delayed", Enabled: true}}
+	task := makeTask([]string{"p1"}, []string{"success"})
+	svc.Deliver(task, makeRun(0, "success", "done"), profiles)
+	driver.fail = true
+	svc.Deliver(task, makeRun(0, "success", "done"), profiles)
+
+	diagnostics := svc.Diagnostics()
+	if diagnostics.Attempts != 2 || diagnostics.Successes != 1 || diagnostics.Failures != 1 {
+		t.Fatalf("diagnostics = %+v", diagnostics)
+	}
+	if diagnostics.LastLatencyMs < 4 || diagnostics.MaxLatencyMs < 4 || len(diagnostics.RecentAttempts) != 2 {
+		t.Fatalf("latency diagnostics = %+v", diagnostics)
+	}
+	if diagnostics.RecentAttempts[0].Status != "failed" || diagnostics.RecentAttempts[0].Error != "delivery driver returned an error" {
+		t.Fatalf("recent attempts = %+v", diagnostics.RecentAttempts)
 	}
 }
 

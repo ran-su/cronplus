@@ -18,6 +18,12 @@ type runRecordWithDiagnosis struct {
 	Diagnosis core.RunDiagnosis `json:"diagnosis"`
 }
 
+func handleGetOperations(engine *core.Engine) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusOK, engine.OperationalDiagnostics())
+	}
+}
+
 func handleDependencyHealth(engine *core.Engine) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		report, err := engine.DependencyHealth(r.PathValue("id"))

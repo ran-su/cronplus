@@ -760,9 +760,13 @@ func persistOrError(w http.ResponseWriter, engine *core.Engine) bool {
 }
 
 func readJSON(r *http.Request, v any) error {
-	body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20)) // 1MB limit
+	const maxJSONBodyBytes = 1 << 20
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxJSONBodyBytes+1))
 	if err != nil {
 		return err
+	}
+	if len(body) > maxJSONBodyBytes {
+		return fmt.Errorf("request body exceeds %d bytes", maxJSONBodyBytes)
 	}
 	return json.Unmarshal(body, v)
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,6 +30,42 @@ func TestGetTaskRunsUnknownTaskReturns404(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestReadJSONRejectsBodyOverLimitEvenWithValidPrefix(t *testing.T) {
+	body := `{"value":"ok"}` + strings.Repeat(" ", (1<<20)+1)
+	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(body))
+	var decoded map[string]string
+	if err := readJSON(req, &decoded); err == nil {
+		t.Fatal("readJSON accepted a request body larger than 1 MiB")
+	}
+}
+
+func TestSSECORSIsRestrictedToUIOrigins(t *testing.T) {
+	allowedOrigins := []string{"http://127.0.0.1:9876"}
+	handler := CORSMiddleware(allowedOrigins, AuthMiddleware("secret", allowedOrigins, SSEHandler(core.NewEventBroker())))
+
+	for _, tc := range []struct {
+		name       string
+		origin     string
+		wantOrigin string
+	}{
+		{name: "untrusted", origin: "https://example.com"},
+		{name: "trusted", origin: allowedOrigins[0], wantOrigin: allowedOrigins[0]},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "/api/events?token=secret", nil)
+			req.Header.Set("Origin", tc.origin)
+			ctx, cancel := context.WithCancel(req.Context())
+			cancel()
+			req = req.WithContext(ctx)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if got := rec.Header().Get("Access-Control-Allow-Origin"); got != tc.wantOrigin {
+				t.Fatalf("Access-Control-Allow-Origin = %q, want %q", got, tc.wantOrigin)
+			}
+		})
 	}
 }
 

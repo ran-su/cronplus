@@ -5,6 +5,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"time"
 
 	"github.com/ran-su/cronplus/internal/core"
 )
@@ -70,8 +71,10 @@ func (s *Server) Build(webFS http.FileSystem) *http.Server {
 	fmt.Printf("  ╰──────────────────────────────────────────╯\n\n")
 
 	return &http.Server{
-		Addr:    s.addr,
-		Handler: handler,
+		Addr:              s.addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 5 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 }
 

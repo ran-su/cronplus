@@ -2,6 +2,7 @@ package api
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/hex"
 	"fmt"
 	"log"
@@ -75,14 +76,14 @@ func AuthMiddleware(token string, allowedOrigins []string, next http.Handler) ht
 		// Check Bearer token in header
 		auth := r.Header.Get("Authorization")
 		if strings.HasPrefix(auth, "Bearer ") {
-			if strings.TrimSpace(auth[7:]) == token {
+			if tokenMatches(strings.TrimSpace(auth[7:]), token) {
 				next.ServeHTTP(w, r)
 				return
 			}
 		}
 
 		// Check token in query param only for SSE EventSource, which can't set headers.
-		if path == "/api/events" && r.URL.Query().Get("token") == token {
+		if path == "/api/events" && tokenMatches(r.URL.Query().Get("token"), token) {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -94,6 +95,10 @@ func AuthMiddleware(token string, allowedOrigins []string, next http.Handler) ht
 
 		http.Error(w, `{"error":"unauthorized","message":"Invalid token."}`, http.StatusUnauthorized)
 	})
+}
+
+func tokenMatches(candidate, expected string) bool {
+	return subtle.ConstantTimeCompare([]byte(candidate), []byte(expected)) == 1
 }
 
 // handleAuthCheck returns the token for localhost connections only.

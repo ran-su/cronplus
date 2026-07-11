@@ -146,10 +146,15 @@ func main() {
 	httpServer := server.Build(http.FS(webFS))
 
 	// Handle graceful shutdown
+	shutdownStarted := make(chan struct{})
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(sigCh)
 		<-sigCh
+		close(shutdownStarted)
 		log.Println("[CronPlus] Shutting down...")
 		cancel()
 		poller.Stop()
@@ -157,15 +162,27 @@ func main() {
 
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		httpServer.Shutdown(shutdownCtx)
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			log.Printf("[CronPlus] Warning: HTTP shutdown did not complete cleanly: %v", err)
+		}
 
 		if err := engine.PersistState(); err != nil {
 			log.Printf("[CronPlus] Warning: failed to persist state on shutdown: %v", err)
 		}
 	}()
 
-	if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-		log.Fatalf("[CronPlus] Server error: %v", err)
+	serveErr := httpServer.ListenAndServe()
+	waitForStartedShutdown(shutdownStarted, shutdownDone)
+	if serveErr != nil && serveErr != http.ErrServerClosed {
+		log.Fatalf("[CronPlus] Server error: %v", serveErr)
+	}
+}
+
+func waitForStartedShutdown(started, done <-chan struct{}) {
+	select {
+	case <-started:
+		<-done
+	default:
 	}
 }
 

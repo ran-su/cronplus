@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRenderLaunchAgentPlist(t *testing.T) {
@@ -38,6 +39,30 @@ func TestRenderLaunchAgentPlist(t *testing.T) {
 	}
 	if strings.Contains(plist, "/Applications/CronPlus & Tools/cronplus") {
 		t.Fatalf("plist contains unescaped binary path:\n%s", plist)
+	}
+}
+
+func TestWaitForStartedShutdownWaitsForCompletion(t *testing.T) {
+	started := make(chan struct{})
+	done := make(chan struct{})
+	returned := make(chan struct{})
+	close(started)
+	go func() {
+		waitForStartedShutdown(started, done)
+		close(returned)
+	}()
+
+	select {
+	case <-returned:
+		t.Fatal("waitForStartedShutdown returned before shutdown completed")
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(done)
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("waitForStartedShutdown did not return after shutdown completed")
 	}
 }
 
@@ -104,10 +129,10 @@ func TestUnstableExecutablePathDetection(t *testing.T) {
 
 func TestResolveListenPort(t *testing.T) {
 	tests := []struct {
-		name    string
+		name     string
 		flagPort int
-		envPort string
-		want    int
+		envPort  string
+		want     int
 	}{
 		{name: "default", want: 9876},
 		{name: "flag wins", flagPort: 4321, envPort: "1234", want: 4321},

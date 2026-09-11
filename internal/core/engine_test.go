@@ -251,7 +251,7 @@ schedule:
 }
 
 func TestCancelRunRecordsCanceledHistory(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
 		t.Skip("python3 not available")
 	}

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -184,6 +185,8 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 			diagnostics.CancelRequestedAt = &now
 		}
 		diagnostics.Cleanup = mergeCleanup(diagnostics.Cleanup, terminateProcessGroup(diagnostics.ProcessGroupID, grace))
+		// Still stop the root process if platform-specific tree cleanup fails.
+		_ = cmd.Process.Kill()
 		waitErr = <-waitCh
 	}
 	copyWG.Wait()
@@ -347,22 +350,39 @@ func resolvePython(m *models.ScriptManifest, manifestDir string) string {
 	case "managed_venv":
 		// Managed venv lives in .cronplus-venv inside the package directory
 		venvDir := filepath.Join(manifestDir, ".cronplus-venv")
-		return filepath.Join(venvDir, "bin", "python3")
+		return venvExecutable(venvDir, "python3")
 	case "venv_path":
 		if m.Runtime.Environment.VenvPath != "" {
 			p := m.Runtime.Environment.VenvPath
 			if !filepath.IsAbs(p) {
 				p = filepath.Join(manifestDir, p)
 			}
-			return filepath.Join(p, "bin", "python3")
+			return venvExecutable(p, "python3")
 		}
-		return "python3"
+		return defaultPythonInterpreter()
 	default: // "system"
 		if m.Runtime.Environment.PythonInterpreter != "" {
 			return m.Runtime.Environment.PythonInterpreter
 		}
-		return "python3"
+		return defaultPythonInterpreter()
 	}
+}
+
+func defaultPythonInterpreter() string {
+	if runtime.GOOS == "windows" {
+		return "python"
+	}
+	return "python3"
+}
+
+func venvExecutable(venvDir, name string) string {
+	if runtime.GOOS == "windows" {
+		if name == "python3" {
+			name = "python"
+		}
+		return filepath.Join(venvDir, "Scripts", name+".exe")
+	}
+	return filepath.Join(venvDir, "bin", name)
 }
 
 func prepareRunDirectory(taskID, runID string) (string, error) {
@@ -678,7 +698,7 @@ func ensureManagedVenv(m *models.ScriptManifest, manifestDir string) error {
 	venvDir := filepath.Join(manifestDir, ".cronplus-venv")
 
 	// Check if venv already exists
-	pythonPath := filepath.Join(venvDir, "bin", "python3")
+	pythonPath := venvExecutable(venvDir, "python3")
 	if _, err := os.Stat(pythonPath); err == nil {
 		// Install requirements if specified
 		return installRequirements(m, manifestDir, venvDir)
@@ -687,7 +707,7 @@ func ensureManagedVenv(m *models.ScriptManifest, manifestDir string) error {
 	// Create venv
 	baseInterpreter := m.Runtime.Environment.PythonInterpreter
 	if baseInterpreter == "" {
-		baseInterpreter = "python3"
+		baseInterpreter = defaultPythonInterpreter()
 	}
 
 	fmt.Printf("[CronPlus] Creating managed venv at %s using %s\n", venvDir, baseInterpreter)
@@ -713,7 +733,7 @@ func installRequirements(m *models.ScriptManifest, manifestDir, venvDir string) 
 		return nil
 	}
 
-	pip := filepath.Join(venvDir, "bin", "pip")
+	pip := venvExecutable(venvDir, "pip")
 	fmt.Printf("[CronPlus] Installing requirements from %s\n", reqFile)
 
 	// Check if requirements are already satisfied by comparing mtime

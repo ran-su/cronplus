@@ -1,4 +1,4 @@
-.PHONY: build run test clean install
+.PHONY: build build-windows run test clean install
 
 BINARY_NAME=cronplus
 VERSION=$(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
@@ -10,6 +10,9 @@ INSTALL_BINDIR ?= $(shell if [ -d /opt/homebrew/bin ]; then echo /opt/homebrew/b
 
 build:
 	$(GO_ENV) go build $(BUILD_FLAGS) -o $(BINARY_NAME) .
+
+build-windows:
+	$(GO_ENV) CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath $(BUILD_FLAGS) -o dist/windows-amd64/$(BINARY_NAME).exe .
 
 run: build
 	./$(BINARY_NAME)

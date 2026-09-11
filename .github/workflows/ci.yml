@@ -42,3 +42,47 @@ jobs:
       - name: Race tests
         run: go test -race ./internal/core ./internal/api ./internal/inbound ./internal/delivery ./internal/manifest
 
+  windows:
+    name: Windows preview
+    runs-on: windows-latest
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: "0"
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Vet
+        run: go vet ./...
+
+      # The full suite runs on Linux above. These tests cover the supported
+      # Windows preview paths; macOS autostart and detached cleanup are excluded.
+      - name: Test Windows daemon locking
+        run: go test -v -count=1 -timeout=2m . -run '^Test(AcquireDaemonLock|DaemonLockHeld)'
+
+      - name: Test Windows task execution and environments
+        run: go test -v -count=1 -timeout=5m ./internal/core -run '^Test(ManagedEnvironment|SystemPython|RunScript(Parses|Loads|Kills|Browser)|CancelRunRecordsCanceledHistory)'
+
+      - name: Build Windows executable
+        run: go build -trimpath -ldflags "-s -w -X main.version=windows-preview-$env:GITHUB_SHA" -o dist/cronplus.exe .
+
+      - name: Smoke test Windows executable
+        run: python scripts/smoke_windows.py dist/cronplus.exe
+
+      - name: Upload Windows executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: cronplus-windows-amd64
+          path: dist/cronplus.exe
+          if-no-files-found: error

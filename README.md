@@ -422,6 +422,30 @@ make test
 
 Before cutting a release, run the focused verification path in [RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md), including the browser UI smoke checks.
 
+### Windows preview build
+
+Cross-compile a Windows x64 executable from macOS or Linux with `make build-windows`.
+The output is `dist/windows-amd64/cronplus.exe`, with the web UI embedded.
+On Windows, open PowerShell in the executable's folder and run:
+
+```powershell
+.\cronplus.exe
+```
+
+Then open http://127.0.0.1:9876. Keep the terminal open; use Ctrl+C to stop.
+Install Python 3 and add it to PATH before running Python tasks (`python --version`
+should work), or set `runtime.environment.python_base_interpreter` to its full path.
+Managed virtual environments use `Scripts/python.exe` and `Scripts/pip.exe` on Windows.
+State and the auth token are stored in `$env:USERPROFILE\.config\cronplus`.
+
+Windows support is experimental. Autostart, automatic updates, the native folder
+picker, OS resource limits, and cleanup of detached/orphaned processes after a task
+exits or the daemon restarts are not supported. Paste the package directory path
+when importing tasks. Cancellation and timeouts force-stop the running process
+tree; there is no graceful shutdown period on Windows. Avoid tasks that leave
+background processes behind. Windows runtime smoke testing is required before
+relying on this build for unattended work.
+
 ### Configuration Flags
 
 ```bash

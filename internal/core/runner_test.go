@@ -13,9 +13,9 @@ import (
 )
 
 func TestRunScriptParsesResultBeforeStdoutTruncation(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -55,9 +55,9 @@ print("CRONPLUS_RESULT=" + json.dumps({"status": "success", "summary": "tail res
 }
 
 func TestRunScriptLoadsEnvFileAndEnvSecretReference(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -103,9 +103,9 @@ print("CRONPLUS_RESULT=" + json.dumps({
 }
 
 func TestRunScriptKillsProcessGroupOnTimeout(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -142,9 +142,9 @@ time.sleep(30)
 }
 
 func TestRunScriptCleansDetachedProcessReferencingRunDir(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -200,9 +200,9 @@ print("CRONPLUS_RESULT=" + json.dumps({
 }
 
 func TestRunScriptBrowserPolicyInjectsPathsAndCopiesProfile(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -259,9 +259,9 @@ print("CRONPLUS_RESULT=" + json.dumps({
 }
 
 func TestRunScriptBrowserPolicyCanRetainFailureDirectory(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -301,9 +301,9 @@ print("CRONPLUS_RESULT=" + json.dumps({"status": "failure", "summary": "keep"}))
 }
 
 func TestRunScriptBrowserPolicyDefaultModesUnsetBrowserPaths(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()
@@ -355,9 +355,9 @@ print("CRONPLUS_RESULT=" + json.dumps({
 }
 
 func TestRunScriptBrowserPolicyProfileCopyFailureDoesNotLaunchScript(t *testing.T) {
-	python, err := exec.LookPath("python3")
+	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {
-		t.Skip("python3 not available")
+		t.Skip("Python is not available")
 	}
 
 	dir := t.TempDir()

@@ -19,7 +19,13 @@ Confirm release builds still work without CGO:
 CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/cronplus-linux-amd64 .
 CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o /tmp/cronplus-linux-arm64 .
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o /tmp/cronplus-darwin-arm64 .
+CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o /tmp/cronplus-windows-amd64.exe .
 ```
+
+Confirm the tag's Release workflow completes both GoReleaser and Verify Windows
+release. The Windows job downloads the published x64 ZIP, verifies its SHA-256
+checksum, and checks startup/restart, the embedded UI, API, SQLite, CLI, daemon
+locking, graceful shutdown, and the embedded release version on Windows.
 
 ## Upgrade Smoke
 

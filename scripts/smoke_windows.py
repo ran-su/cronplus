@@ -1,5 +1,6 @@
 """Exercise a built Windows executable in an isolated, disposable user profile."""
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -19,7 +20,7 @@ def available_port():
         return listener.getsockname()[1]
 
 
-def smoke(binary):
+def smoke(binary, expected_version=None):
     with tempfile.TemporaryDirectory(prefix="cronplus-windows-smoke-") as temp:
         profile = Path(temp)
         env = os.environ.copy()
@@ -61,7 +62,10 @@ def smoke(binary):
                     )
                     with http.open(request, timeout=5) as response:
                         status = json.load(response)
-                    assert status["version"].startswith("windows-preview-"), status
+                    if expected_version is not None:
+                        assert status["version"] == expected_version, status
+                    else:
+                        assert status["version"].startswith("windows-preview-"), status
                     assert status["tasks"]["total"] == 0, status
                     assert (config / "state.db").is_file(), "SQLite state is missing"
                     with http.open(base_url + "/", timeout=5) as response:
@@ -95,4 +99,8 @@ def smoke(binary):
 if __name__ == "__main__":
     if sys.platform != "win32":
         raise SystemExit("This smoke test requires Windows")
-    smoke(Path(sys.argv[1]).resolve(strict=True))
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("binary", type=Path)
+    parser.add_argument("--version", help="Expected version reported by the executable")
+    args = parser.parse_args()
+    smoke(args.binary.resolve(strict=True), args.version)

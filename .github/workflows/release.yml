@@ -32,3 +32,42 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  verify-windows:
+    name: Verify Windows release
+    needs: goreleaser
+    runs-on: windows-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Download and verify release archive
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download $env:RELEASE_TAG --pattern "cronplus_windows_amd64.zip" --pattern "*checksums.txt" --dir dist
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $checksumFile = Get-ChildItem dist -Filter '*checksums.txt'
+          $checksumLine = Get-Content $checksumFile.FullName | Where-Object { $_ -match '\s+cronplus_windows_amd64\.zip$' }
+          if (@($checksumLine).Count -ne 1) { throw 'Expected one Windows archive checksum' }
+          $expectedHash = ($checksumLine -split '\s+')[0]
+          $actualHash = (Get-FileHash dist/cronplus_windows_amd64.zip -Algorithm SHA256).Hash
+          if ($actualHash -ne $expectedHash) { throw 'Windows archive checksum mismatch' }
+          Expand-Archive dist/cronplus_windows_amd64.zip -DestinationPath dist/windows
+
+      - name: Smoke test published Windows executable
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          $releaseVersion = $env:RELEASE_TAG.TrimStart('v')
+          python scripts/smoke_windows.py dist/windows/cronplus.exe --version $releaseVersion

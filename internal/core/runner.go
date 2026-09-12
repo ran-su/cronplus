@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -26,6 +27,10 @@ type RunScriptOptions struct {
 	OnFinished     func(runID string)
 	RegisterCancel func(runID string, cancel func(string))
 }
+
+// Allow buffered output to drain after exit without waiting indefinitely for
+// descendants that inherited the output pipes. Process cleanup follows Wait.
+const outputDrainTimeout = time.Second
 
 // RunScript executes a Python script and returns the outcome.
 // It handles timeout enforcement, environment setup, and result parsing.
@@ -93,14 +98,16 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 	cmd.Env = applyEnvOverrides(buildEnv(m, manifestDir), runEnv)
 	configureProcessGroup(cmd)
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, browserDiagnostics, err)
-	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return launchFailureOutcomeWithBrowser(m, pythonExe, scriptPath, workingDir, runDir, browserDiagnostics, err)
-	}
+	maxBytes := m.Runtime.MaxOutputKB * 1024
+	stdoutBuf := newCappedBuffer(maxBytes)
+	stderrBuf := newCappedBuffer(maxBytes)
+	resultCapture := newResultLineCapture(m.ResultContract.ResultPrefix)
+	outputReady := make(chan struct{})
+	// Let os/exec own the copy goroutines so Wait drains output before closing
+	// the pipes. StdoutPipe plus a concurrent Wait can discard the final result.
+	cmd.Stdout = &runOutputWriter{io.MultiWriter(stdoutBuf, resultCapture), outputReady, opts.RunID, "stdout", opts.OnOutput}
+	cmd.Stderr = &runOutputWriter{stderrBuf, outputReady, opts.RunID, "stderr", opts.OnOutput}
+	cmd.WaitDelay = outputDrainTimeout
 
 	start := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -140,26 +147,11 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		})
 		startedReported = true
 	}
+	close(outputReady)
 	defer func() {
 		if startedReported && opts.OnFinished != nil {
 			opts.OnFinished(opts.RunID)
 		}
-	}()
-
-	maxBytes := m.Runtime.MaxOutputKB * 1024
-	stdoutBuf := newCappedBuffer(maxBytes)
-	stderrBuf := newCappedBuffer(maxBytes)
-	resultCapture := newResultLineCapture(m.ResultContract.ResultPrefix)
-
-	var copyWG sync.WaitGroup
-	copyWG.Add(2)
-	go func() {
-		defer copyWG.Done()
-		_, _ = copyRunOutput(io.MultiWriter(stdoutBuf, resultCapture), stdoutPipe, opts.RunID, "stdout", opts.OnOutput)
-	}()
-	go func() {
-		defer copyWG.Done()
-		_, _ = copyRunOutput(stderrBuf, stderrPipe, opts.RunID, "stderr", opts.OnOutput)
 	}()
 
 	waitCh := make(chan error, 1)
@@ -189,7 +181,11 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 		_ = cmd.Process.Kill()
 		waitErr = <-waitCh
 	}
-	copyWG.Wait()
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		// The root exited successfully; inherited pipes are closed and any
+		// remaining descendants are handled by process cleanup below.
+		waitErr = nil
+	}
 	durationMs := time.Since(start).Milliseconds()
 
 	resultCapture.Finish()
@@ -283,28 +279,22 @@ func RunScriptWithOptions(m *models.ScriptManifest, manifestDir string, opts Run
 	}
 }
 
-func copyRunOutput(dst io.Writer, src io.Reader, runID, stream string, onOutput func(runID, stream, chunk string)) (int64, error) {
-	buf := make([]byte, 32*1024)
-	var written int64
-	for {
-		n, readErr := src.Read(buf)
-		if n > 0 {
-			chunk := buf[:n]
-			if _, writeErr := dst.Write(chunk); writeErr != nil && readErr == nil {
-				return written, writeErr
-			}
-			written += int64(n)
-			if onOutput != nil {
-				onOutput(runID, stream, string(chunk))
-			}
-		}
-		if readErr != nil {
-			if readErr == io.EOF {
-				return written, nil
-			}
-			return written, readErr
-		}
+type runOutputWriter struct {
+	dst      io.Writer
+	ready    <-chan struct{}
+	runID    string
+	stream   string
+	onOutput func(runID, stream, chunk string)
+}
+
+func (w *runOutputWriter) Write(p []byte) (int, error) {
+	// Live output must follow OnStarted so the engine has an active run record.
+	<-w.ready
+	n, err := w.dst.Write(p)
+	if n > 0 && w.onOutput != nil {
+		w.onOutput(w.runID, w.stream, string(p[:n]))
 	}
+	return n, err
 }
 
 func launchFailureOutcome(m *models.ScriptManifest, manifestDir, pythonExe, scriptPath, workingDir, runDir string, err error) *models.RunOutcome {
@@ -767,14 +757,16 @@ func runSetupCommand(m *models.ScriptManifest, manifestDir string, cmd *exec.Cmd
 	cmd.Dir = manifestDir
 	configureProcessGroup(cmd)
 
-	stdoutPipe, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("%s failed to prepare stdout: %w", description, err)
+	maxOutputKB := m.Runtime.MaxOutputKB
+	if maxOutputKB <= 0 {
+		maxOutputKB = 512
 	}
-	stderrPipe, err := cmd.StderrPipe()
-	if err != nil {
-		return fmt.Errorf("%s failed to prepare stderr: %w", description, err)
-	}
+	maxBytes := maxOutputKB * 1024
+	stdoutBuf := newCappedBuffer(maxBytes)
+	stderrBuf := newCappedBuffer(maxBytes)
+	cmd.Stdout = stdoutBuf
+	cmd.Stderr = stderrBuf
+	cmd.WaitDelay = outputDrainTimeout
 
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("%s failed to start: %w", description, err)
@@ -786,25 +778,6 @@ func runSetupCommand(m *models.ScriptManifest, manifestDir string, cmd *exec.Cmd
 			pgid = got
 		}
 	}
-
-	maxOutputKB := m.Runtime.MaxOutputKB
-	if maxOutputKB <= 0 {
-		maxOutputKB = 512
-	}
-	maxBytes := maxOutputKB * 1024
-	stdoutBuf := newCappedBuffer(maxBytes)
-	stderrBuf := newCappedBuffer(maxBytes)
-
-	var copyWG sync.WaitGroup
-	copyWG.Add(2)
-	go func() {
-		defer copyWG.Done()
-		_, _ = io.Copy(stdoutBuf, stdoutPipe)
-	}()
-	go func() {
-		defer copyWG.Done()
-		_, _ = io.Copy(stderrBuf, stderrPipe)
-	}()
 
 	waitCh := make(chan error, 1)
 	go func() {
@@ -827,7 +800,9 @@ func runSetupCommand(m *models.ScriptManifest, manifestDir string, cmd *exec.Cmd
 		}
 		waitErr = <-waitCh
 	}
-	copyWG.Wait()
+	if errors.Is(waitErr, exec.ErrWaitDelay) {
+		waitErr = nil
+	}
 
 	output := strings.TrimSpace(strings.Join([]string{stdoutBuf.String(), stderrBuf.String()}, "\n"))
 	if stdoutBuf.Truncated() || stderrBuf.Truncated() {

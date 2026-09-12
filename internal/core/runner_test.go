@@ -102,6 +102,39 @@ print("CRONPLUS_RESULT=" + json.dumps({
 	}
 }
 
+func TestRunScriptDrainsOutputAfterProcessExit(t *testing.T) {
+	python, err := exec.LookPath(defaultPythonInterpreter())
+	if err != nil {
+		t.Skip("Python is not available")
+	}
+	dir := t.TempDir()
+	script := `import time
+print("started", flush=True)
+time.sleep(0.1)
+print('CRONPLUS_RESULT={"status":"success","summary":"final output"}', flush=True)
+`
+	if err := os.WriteFile(filepath.Join(dir, "script.py"), []byte(script), 0600); err != nil {
+		t.Fatal(err)
+	}
+	outcome := RunScriptWithOptions(&models.ScriptManifest{
+		Script: models.ScriptSection{Path: "./script.py"},
+		Runtime: models.RuntimeSection{
+			TimeoutSeconds: 5,
+			Environment:    models.EnvironmentConfig{Strategy: "system", PythonInterpreter: python},
+		},
+	}, dir, RunScriptOptions{
+		OnOutput: func(_, _, chunk string) {
+			if strings.Contains(chunk, "started") {
+				// The child exits while live-output processing is still busy.
+				time.Sleep(300 * time.Millisecond)
+			}
+		},
+	})
+	if outcome.ExitCode != 0 || outcome.ParsedResult == nil || outcome.ParsedResult.Summary != "final output" {
+		t.Fatalf("lost output when the process exited: %+v", outcome)
+	}
+}
+
 func TestRunScriptKillsProcessGroupOnTimeout(t *testing.T) {
 	python, err := exec.LookPath(defaultPythonInterpreter())
 	if err != nil {

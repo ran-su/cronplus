@@ -72,7 +72,7 @@ jobs:
         run: go test -v -count=1 -timeout=2m . -run '^Test(AcquireDaemonLock|DaemonLockHeld)'
 
       - name: Test Windows task execution and environments
-        run: go test -v -count=1 -timeout=5m ./internal/core -run '^Test(ManagedEnvironment|SystemPython|RunScript(Parses|Loads|Kills|Browser)|CancelRunRecordsCanceledHistory)'
+        run: go test -v -count=1 -timeout=5m ./internal/core -run '^Test(ManagedEnvironment|SystemPython|RunScript(Parses|Loads|Drains|Kills|Browser)|CancelRunRecordsCanceledHistory)'
 
       - name: Build Windows executable
         run: go build -trimpath -ldflags "-s -w -X main.version=windows-preview-$env:GITHUB_SHA" -o dist/cronplus.exe .
